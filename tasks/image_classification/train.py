@@ -542,7 +542,12 @@ if __name__=='__main__':
                     else: # FF
                          current_train_accuracies = (all_targets == all_predictions).mean() # Shape scalar
                          train_accuracies.append(current_train_accuracies)
-                    logging.info(f'Train Loss: {train_losses[-1]:.4f}, Train Accuracy{current_train_accuracies[-1] if args.model in ["ctm", "lstm"] else current_train_accuracies:.4f}, Train Most Certain Accuracy: {current_train_accuracies_most_certain:.4f if args.model in ["ctm", "lstm"] else "N/A"}', extra={'iteration': bi})                
+                    
+                    train_acc_log = current_train_accuracies[-1] if args.model in ["ctm", "lstm"] else current_train_accuracies
+                    train_acc_most_certain_log = f"{current_train_accuracies_most_certain:.4f}" if args.model in ["ctm", "lstm"] else "N/A"
+                    
+                    logging.info(f'Train Loss: {train_losses[-1]:.4f}, Train Accuracy: {train_acc_log:.4f}, Train Most Certain Accuracy: {train_acc_most_certain_log}', extra={'iteration': bi})
+
                 del these_predictions
                 
 
@@ -599,7 +604,12 @@ if __name__=='__main__':
                     else: # FF
                          current_test_accuracies = (all_targets == all_predictions).mean()
                          test_accuracies.append(current_test_accuracies)
-                    logging.info(f'Test Loss: {test_losses[-1]:.4f}, Test Accuracy: {current_test_accuracies[-1] if args.model in ["ctm", "lstm"] else current_test_accuracies:.4f}, Test Most Certain Accuracy: {current_test_accuracies_most_certain:.4f if args.model in ["ctm", "lstm"] else "N/A"}', extra={'iteration': bi})
+                    
+                    test_acc_log = current_test_accuracies[-1] if args.model in ["ctm", "lstm"] else current_test_accuracies
+                    test_acc_most_certain_log = f"{current_test_accuracies_most_certain:.4f}" if args.model in ["ctm", "lstm"] else "N/A"
+
+                    logging.info(f'Test Loss: {test_losses[-1]:.4f}, Test Accuracy: {test_acc_log:.4f}, Test Most Certain Accuracy: {test_acc_most_certain_log}', extra={'iteration': bi})
+
                 # Plotting (conditional)
                 figacc = plt.figure(figsize=(10, 10))
                 axacc_train = figacc.add_subplot(211)
