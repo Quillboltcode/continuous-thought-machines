@@ -1,0 +1,33 @@
+[project]
+name = "continuous-thought-machines"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Your Name", email = "you@example.com" },
+]
+dependencies = [
+    "numpy",
+    "torch",
+    "torchvision",
+    "matplotlib",
+    "seaborn",
+    "tqdm",
+    "opencv-python",
+    "imageio",
+    "scikit-learn",
+    "umap-learn",
+    "python-dotenv",
+    "gymnasium",
+    "minigrid",
+    "datasets",
+    "autoclip",
+]
+readme = "README.md"
+requires-python = ">=3.12"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff.lint.per-file-ignores]
+"tasks/image_classification/*" = ["E402"]

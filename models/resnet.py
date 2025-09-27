@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import os
 from models.modules import Identity
+import torchvision.models as models
 
 __all__ = [
     "ResNet",
@@ -283,70 +284,98 @@ class ResNet(nn.Module):
         return x
 
 
-def _resnet(in_channels, feature_scales, stride, arch, block, layers, pretrained, progress, device, do_initial_max_pool, **kwargs):
-    model = ResNet(in_channels, feature_scales, stride, block, layers, do_initial_max_pool=do_initial_max_pool, **kwargs)
+def _resnet(in_channels, feature_scales, stride, arch, block, layers, pretrained, pretrained_dataset, progress, device, do_initial_max_pool, **kwargs):
     if pretrained:
-        assert in_channels==3
-        script_dir = os.path.dirname(__file__)
-        state_dict = torch.load(
-            script_dir + '/state_dicts/' + arch + ".pt", map_location=device
-        )
-        model.load_state_dict(state_dict, strict=False)
+        if pretrained_dataset.lower() == 'imagenet':
+            # Load the standard 3-channel pretrained model
+            pretrained_model = models.__dict__[arch](pretrained=True)
+            pretrained_state_dict = pretrained_model.state_dict()
+
+            # Create our new model with the desired number of input channels
+            model = ResNet(in_channels, feature_scales, stride, block, layers, do_initial_max_pool=do_initial_max_pool, **kwargs)
+            
+            # If the input channels are not 3, we need to adapt the first convolutional layer's weights
+            if in_channels != 3:
+                # Get the weights of the first conv layer from the pretrained model
+                conv1_weights = pretrained_state_dict['conv1.weight']
+                # Average the weights across the 3 input channels
+                avg_weights = conv1_weights.mean(dim=1, keepdim=True)
+                # Repeat the averaged weights for the new number of input channels
+                new_conv1_weights = avg_weights.repeat(1, in_channels, 1, 1)
+                # Update the state dict with the new conv1 weights
+                pretrained_state_dict['conv1.weight'] = new_conv1_weights
+            
+            # Load the (potentially modified) state dict. strict=False is important.
+            model.load_state_dict(pretrained_state_dict, strict=False)
+        elif pretrained_dataset.lower() == 'celeba':
+            model = ResNet(in_channels, feature_scales, stride, block, layers, do_initial_max_pool=do_initial_max_pool, **kwargs)
+            script_dir = os.path.dirname(__file__)
+            state_dict_path = os.path.join(script_dir, 'state_dicts', f'{arch}_celeba.pt')
+            if os.path.exists(state_dict_path):
+                state_dict = torch.load(state_dict_path, map_location=device)
+                model.load_state_dict(state_dict, strict=False)
+            else:
+                raise FileNotFoundError(f"CelebA pretrained weights not found at {state_dict_path}")
+        else:
+            raise ValueError("pretrained_dataset must be 'imagenet' or 'celeba'")
+    else:
+        # If not pretrained, just create the model directly
+        model = ResNet(in_channels, feature_scales, stride, block, layers, do_initial_max_pool=do_initial_max_pool, **kwargs)
     return model
 
 
-def resnet18(in_channels, feature_scales, stride=2, pretrained=False, progress=True, device="cpu", do_initial_max_pool=True, **kwargs):
+def resnet18(in_channels, feature_scales, stride=2, pretrained=False, pretrained_dataset='imagenet', progress=True, device="cpu", do_initial_max_pool=True, **kwargs):
     """Constructs a ResNet-18 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
     return _resnet(in_channels,
-        feature_scales, stride, "resnet18", BasicBlock, [2, 2, 2, 2], pretrained, progress, device, do_initial_max_pool, **kwargs
+        feature_scales, stride, "resnet18", BasicBlock, [2, 2, 2, 2], pretrained, pretrained_dataset, progress, device, do_initial_max_pool, **kwargs
     )
 
 
-def resnet34(in_channels, feature_scales, stride=2, pretrained=False, progress=True, device="cpu", do_initial_max_pool=True, **kwargs):
+def resnet34(in_channels, feature_scales, stride=2, pretrained=False, pretrained_dataset='imagenet', progress=True, device="cpu", do_initial_max_pool=True, **kwargs):
     """Constructs a ResNet-34 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
     return _resnet(in_channels,
-        feature_scales, stride, "resnet34", BasicBlock, [3, 4, 6, 3], pretrained, progress, device, do_initial_max_pool, **kwargs
+        feature_scales, stride, "resnet34", BasicBlock, [3, 4, 6, 3], pretrained, pretrained_dataset, progress, device, do_initial_max_pool, **kwargs
     )
 
 
-def resnet50(in_channels, feature_scales, stride=2, pretrained=False, progress=True, device="cpu", do_initial_max_pool=True, **kwargs):
+def resnet50(in_channels, feature_scales, stride=2, pretrained=False, pretrained_dataset='imagenet', progress=True, device="cpu", do_initial_max_pool=True, **kwargs):
     """Constructs a ResNet-50 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
     return _resnet(in_channels,
-        feature_scales, stride, "resnet50", Bottleneck, [3, 4, 6, 3], pretrained, progress, device, do_initial_max_pool, **kwargs
+        feature_scales, stride, "resnet50", Bottleneck, [3, 4, 6, 3], pretrained, pretrained_dataset, progress, device, do_initial_max_pool, **kwargs
     )
 
 
-def resnet101(in_channels, feature_scales, stride=2, pretrained=False, progress=True, device="cpu", do_initial_max_pool=True, **kwargs):
+def resnet101(in_channels, feature_scales, stride=2, pretrained=False, pretrained_dataset='imagenet', progress=True, device="cpu", do_initial_max_pool=True, **kwargs):
     """Constructs a ResNet-50 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
     return _resnet(in_channels,
-        feature_scales, stride, "resnet101", Bottleneck, [3, 4, 23, 3], pretrained, progress, device, do_initial_max_pool, **kwargs
+        feature_scales, stride, "resnet101", Bottleneck, [3, 4, 23, 3], pretrained, pretrained_dataset, progress, device, do_initial_max_pool, **kwargs
     )
 
 
-def resnet152(in_channels, feature_scales, stride=2, pretrained=False, progress=True, device="cpu", do_initial_max_pool=True, **kwargs):
+def resnet152(in_channels, feature_scales, stride=2, pretrained=False, pretrained_dataset='imagenet', progress=True, device="cpu", do_initial_max_pool=True, **kwargs):
     """Constructs a ResNet-50 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
     return _resnet(in_channels,
-        feature_scales, stride, "resnet152", Bottleneck, [3, 4, 36, 3], pretrained, progress, device, do_initial_max_pool, **kwargs
+        feature_scales, stride, "resnet152", Bottleneck, [3, 4, 36, 3], pretrained, pretrained_dataset, progress, device, do_initial_max_pool, **kwargs
     )
 
 def prepare_resnet_backbone(backbone_type):
@@ -372,3 +401,56 @@ def prepare_resnet_backbone(backbone_type):
     )
 
     return backbone
+
+if __name__ == '__main__':
+    # This block will only run when the script is executed directly
+    # It allows for testing the functions in this file.
+
+    # --- Fix for local testing ---
+    # Add the project root to the Python path to allow absolute imports
+    import sys
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+    print("Current Python Path:", sys.path)
+    print("--- Running ResNet Test ---")
+
+    # --- Test Case 1: Create a non-pretrained resnet18 ---
+    print("\n1. Testing non-pretrained resnet18 creation...")
+    try:
+        model_no_pretrain = resnet18(in_channels=3, feature_scales=[1, 2, 3, 4], do_initial_max_pool=True)
+        print("   ✅ Success: Created non-pretrained resnet18.")
+        # print(model_no_pretrain)
+    except Exception as e:
+        print(f"   ❌ Failed: {e}")
+
+    # --- Test Case 2: Load ImageNet pretrained weights ---
+    # This tests the `pretrained=True` and `pretrained_dataset='imagenet'` path
+    print("\n2. Testing ImageNet pretrained resnet18 loading...")
+    try: # Now testing with 7 input channels
+        model_imagenet = _resnet(
+            in_channels=7, feature_scales=[1, 2, 3, 4], stride=2,
+            arch="resnet18", block=BasicBlock, layers=[2, 2, 2, 2],
+            pretrained=True, pretrained_dataset='imagenet', progress=True,
+            device="cpu", do_initial_max_pool=True
+        )
+        print("   ✅ Success: Loaded ImageNet pretrained weights into a 7-channel resnet18.")
+    except Exception as e:
+        print(f"   ❌ Failed: {e}")
+
+    # --- Test Case 3: Attempt to load CelebA weights (will likely fail if file doesn't exist) ---
+    # This tests the `pretrained_dataset='celeba'` path
+    print("\n3. Testing CelebA pretrained resnet18 loading...")
+    try:
+        model_celeba = _resnet(
+            in_channels=3, feature_scales=[1, 2, 3, 4], stride=2,
+            arch="resnet18", block=BasicBlock, layers=[2, 2, 2, 2],
+            pretrained=True, pretrained_dataset='celeba', progress=True,
+            device="cpu", do_initial_max_pool=True
+        )
+        print("   ✅ Success: Loaded CelebA pretrained weights (file was found).")
+    except FileNotFoundError as e:
+        print(f"   ✅ Success (as expected): Correctly raised FileNotFoundError because weights file is missing.")
+        print(f"      Details: {e}")
+    except Exception as e:
+        print(f"   ❌ Failed with an unexpected error: {e}")
+
+    print("\n--- Test Complete ---")

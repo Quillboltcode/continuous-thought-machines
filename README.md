@@ -1,5 +1,13 @@
 # 🕰️ The Continuous Thought Machine
 
+> **Note from Fork**: This is a fork of [sakana-ai/continuous-thought-machines](https://github.com/sakana-ai/continuous-thought-machines). 
+> 
+> - I've added a new dataset in FER domain.
+> 
+> The original `README.md` continues below.
+
+---
+
 📚 [PAPER: Technical Report](https://arxiv.org/abs/2505.05522) | 📝 [Blog](https://sakana.ai/ctm/) | 🕹️ [Interactive Website](https://pub.sakana.ai/ctm) | ✏️ [Tutorial](examples/01_mnist.ipynb)
 
 ![Activations](assets/activations.gif)

@@ -1,7 +1,7 @@
 import argparse
 import os
 import random
-
+import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
@@ -10,7 +10,7 @@ import torch
 if torch.cuda.is_available():
     # For faster
     torch.set_float32_matmul_precision('high')
-import torch.nn as nn
+import torch.nn as nn  
 from tqdm.auto import tqdm
 
 from data.custom_datasets import ImageNet
@@ -108,7 +108,7 @@ def parse_args():
     # Housekeeping
     parser.add_argument('--log_dir', type=str, default='logs/scratch', help='Directory for logging.')
     parser.add_argument('--dataset', type=str, default='cifar10', help='Dataset to use.')
-    parser.add_argument('--data_root', type=str, default='data/', help='Where to save dataset.')
+    parser.add_argument('--data_root', type=str, default='data/', help='Where to save/get dataset.')
     parser.add_argument('--save_every', type=int, default=1000, help='Save checkpoints every this many iterations.')
     parser.add_argument('--seed', type=int, default=412, help='Random seed.')
     parser.add_argument('--reload', action=argparse.BooleanOptionalAction, default=False, help='Reload from disk?')
@@ -180,6 +180,22 @@ def get_dataset(dataset, root):
         test_data = datasets.CIFAR100(root, train=False, transform=test_transform, download=True)
         idx_order = np.argsort(np.array(list(train_data.class_to_idx.values())))
         class_labels = list(np.array(list(train_data.class_to_idx.keys()))[idx_order])
+    elif dataset=='RAFDB':
+        # Using same normalization as CelebA
+        dataset_mean = [0.5, 0.5, 0.5]
+        dataset_std = [0.5, 0.5, 0.5]
+        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
+
+        train_transform = transforms.Compose(
+            [transforms.ToTensor(),
+            normalize,
+            ])
+        test_transform = transforms.Compose(
+            [transforms.ToTensor(),
+            normalize,
+            ])
+        train_data = datasets.ImageFolder(os.path.join(root, 'train'), transform=train_transform)
+        test_data = datasets.ImageFolder(os.path.join(root, 'test'), transform=test_transform)
     else:
         raise NotImplementedError
 
@@ -194,8 +210,14 @@ if __name__=='__main__':
 
     set_seed(args.seed, False)
     if not os.path.exists(args.log_dir): os.makedirs(args.log_dir)
+    # Set up logging
+    logging.basicConfig(
+        filename=os.path.join(args.log_dir, 'training.log'),
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+    )    
 
-    assert args.dataset in ['cifar10', 'cifar100', 'imagenet']
+    assert args.dataset in ['cifar10', 'cifar100', 'imagenet', 'RAFDB'], f'Need to be one of cifar10, cifar100, imagenet, RAFDB, got {args.dataset}'
 
     # Data
     train_data, test_data, class_labels, dataset_mean, dataset_std = get_dataset(args.dataset, args.data_root)
@@ -509,7 +531,7 @@ if __name__=='__main__':
                     else: # FF
                          current_train_accuracies = (all_targets == all_predictions).mean() # Shape scalar
                          train_accuracies.append(current_train_accuracies)
-                
+                    logging.info(f'Train Loss: {train_losses[-1]:.4f}, Train Accuracy{current_train_accuracies[-1] if args.model in ["ctm", "lstm"] else current_train_accuracies:.4f}, Train Most Certain Accuracy: {current_train_accuracies_most_certain:.4f if args.model in ["ctm", "lstm"] else "N/A"}', extra={'iteration': bi})                
                 del these_predictions
                 
 
@@ -566,7 +588,7 @@ if __name__=='__main__':
                     else: # FF
                          current_test_accuracies = (all_targets == all_predictions).mean()
                          test_accuracies.append(current_test_accuracies)
-
+                    logging.info(f'Test Loss: {test_losses[-1]:.4f}, Test Accuracy: {current_test_accuracies[-1] if args.model in ["ctm", "lstm"] else current_test_accuracies:.4f}, Test Most Certain Accuracy: {current_test_accuracies_most_certain:.4f if args.model in ["ctm", "lstm"] else "N/A"}', extra={'iteration': bi})
                 # Plotting (conditional)
                 figacc = plt.figure(figsize=(10, 10))
                 axacc_train = figacc.add_subplot(211)
