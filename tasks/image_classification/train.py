@@ -196,6 +196,17 @@ def get_dataset(dataset, root):
             ])
         train_data = datasets.ImageFolder(os.path.join(root, 'train'), transform=train_transform)
         test_data = datasets.ImageFolder(os.path.join(root, 'test'), transform=test_transform)
+        # The RAF-DB dataset uses 1-indexed numerical labels for its 7 basic emotions.
+        # ImageFolder will read these as class names '1', '2', etc.
+        # 1-Surprise, 2-Fear, 3-Disgust, 4-Happiness, 5-Sadness, 6-Anger, 7-Neutral
+        # We hardcode the correct text labels here in the official order.
+        class_labels = ['Surprise',
+                        'Fear',
+                        'Disgust',
+                        'Happiness',
+                        'Sadness',
+                        'Anger',
+                        'Neutral']
     else:
         raise NotImplementedError
 
