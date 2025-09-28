@@ -1,7 +1,7 @@
 import argparse
 import os
 import random
-import logging
+import wandb
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
@@ -222,12 +222,13 @@ if __name__=='__main__':
     set_seed(args.seed, False)
     if not os.path.exists(args.log_dir): os.makedirs(args.log_dir)
     # Set up logging
-    logging.basicConfig(
-        filename=os.path.join(args.log_dir, 'training.log'),
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-    )    
-
+    wandb.init(
+        project="continuous-thought-machines-fer",
+        dir=args.log_dir, 
+        config=vars(args),
+        name=f"{args.model}_{args.dataset}_bs{args.batch_size}_lr{args.lr}_iters{args.training_iterations}", 
+        reinit=True)
+    wandb.log({"Logging initialized": True})
     assert args.dataset in ['cifar10', 'cifar100', 'imagenet', 'RAFDB'], f'Need to be one of cifar10, cifar100, imagenet, RAFDB, got {args.dataset}'
 
     # Data
@@ -546,7 +547,12 @@ if __name__=='__main__':
                     train_acc_log = current_train_accuracies[-1] if args.model in ["ctm", "lstm"] else current_train_accuracies
                     train_acc_most_certain_log = f"{current_train_accuracies_most_certain:.4f}" if args.model in ["ctm", "lstm"] else "N/A"
                     
-                    logging.info(f'Train Loss: {train_losses[-1]:.4f}, Train Accuracy: {train_acc_log:.4f}, Train Most Certain Accuracy: {train_acc_most_certain_log}', extra={'iteration': bi})
+                    wandb.log({
+                        'Train Loss': train_losses[-1],
+                        'Train Accuracy': train_acc_log,
+                        'Train Most Certain Accuracy': train_acc_most_certain_log,
+                        'Learning Rate': current_lr,
+                        }, step=bi)
 
                 del these_predictions
                 
@@ -608,7 +614,12 @@ if __name__=='__main__':
                     test_acc_log = current_test_accuracies[-1] if args.model in ["ctm", "lstm"] else current_test_accuracies
                     test_acc_most_certain_log = f"{current_test_accuracies_most_certain:.4f}" if args.model in ["ctm", "lstm"] else "N/A"
 
-                    logging.info(f'Test Loss: {test_losses[-1]:.4f}, Test Accuracy: {test_acc_log:.4f}, Test Most Certain Accuracy: {test_acc_most_certain_log}', extra={'iteration': bi})
+                    wandb.log({
+                        'Test Loss': test_losses[-1],
+                        'Test Accuracy': test_acc_log,
+                        'Test Most Certain Accuracy': test_acc_most_certain_log,
+                        }, step=bi)
+
 
                 # Plotting (conditional)
                 figacc = plt.figure(figsize=(10, 10))
@@ -727,7 +738,7 @@ if __name__=='__main__':
                 if args.model in ['ctm', 'lstm']:
                     checkpoint_data['train_accuracies_most_certain'] = train_accuracies_most_certain
                     checkpoint_data['test_accuracies_most_certain'] = test_accuracies_most_certain
-
+                wandb.log({"Checkpoint saved": True}, step=bi)
                 torch.save(checkpoint_data, f'{args.log_dir}/checkpoint.pt')
 
             pbar.update(1)
