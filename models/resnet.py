@@ -378,23 +378,28 @@ def resnet152(in_channels, feature_scales, stride=2, pretrained=False, pretraine
         feature_scales, stride, "resnet152", Bottleneck, [3, 4, 36, 3], pretrained, pretrained_dataset, progress, device, do_initial_max_pool, **kwargs
     )
 
-def prepare_resnet_backbone(backbone_type):
+def prepare_resnet_backbone(backbone_type, pretrained=False):
       
     resnet_family = resnet18 # Default
     if '34' in backbone_type: resnet_family = resnet34
     if '50' in backbone_type: resnet_family = resnet50
     if '101' in backbone_type: resnet_family = resnet101
     if '152' in backbone_type: resnet_family = resnet152
+    
+    # Check for 'pretrained' flag in the backbone_type string
+    if 'pretrained' in backbone_type:
+        pretrained = True
 
     # Determine which ResNet blocks to keep
-    block_num_str = backbone_type.split('-')[-1]
+    # Filter out 'pretrained' before splitting to get the block number
+    block_num_str = backbone_type.replace('-pretrained', '').split('-')[-1]
     hyper_blocks_to_keep = list(range(1, int(block_num_str) + 1)) if block_num_str.isdigit() else [1, 2, 3, 4]
 
     backbone = resnet_family(
         3,
         hyper_blocks_to_keep,
         stride=2,
-        pretrained=False,
+        pretrained=pretrained,
         progress=True,
         device="cpu",
         do_initial_max_pool=True,

@@ -2,7 +2,7 @@ import torch.nn as nn
 
 # Local imports (Assuming these contain necessary custom modules)
 from models.modules import *
-from models.resnet import resnet18, resnet34, resnet50, resnet101, resnet152
+from models.resnet import prepare_resnet_backbone
 
 
 class FFBaseline(nn.Module):
@@ -44,26 +44,7 @@ class FFBaseline(nn.Module):
         self.initial_rgb = Identity() # Placeholder, potentially replaced if using ResNet
 
         
-        self.initial_rgb = nn.LazyConv2d(3, 1, 1) # Adapts input channels lazily
-        resnet_family = resnet18 # Default
-        if '34' in self.backbone_type: resnet_family = resnet34
-        if '50' in self.backbone_type: resnet_family = resnet50
-        if '101' in self.backbone_type: resnet_family = resnet101
-        if '152' in self.backbone_type: resnet_family = resnet152
-
-        # Determine which ResNet blocks to keep
-        block_num_str = self.backbone_type.split('-')[-1]
-        hyper_blocks_to_keep = list(range(1, int(block_num_str) + 1)) if block_num_str.isdigit() else [1, 2, 3, 4]
-
-        self.backbone = resnet_family(
-            3, # initial_rgb handles input channels now
-            hyper_blocks_to_keep,
-            stride=2,
-            pretrained=False,
-            progress=True,
-            device="cpu", # Initialise on CPU, move later via .to(device)
-            do_initial_max_pool=True,
-        )
+        self.backbone = prepare_resnet_backbone(self.backbone_type, pretrained=False)
 
 
         # At this point we will have a 4D tensor of features: [B, C, H, W]
@@ -72,4 +53,4 @@ class FFBaseline(nn.Module):
 
 
     def forward(self, x):
-        return self.output_projector((self.backbone(self.initial_rgb(x))))
+        return self.output_projector(self.backbone(x))
