@@ -412,7 +412,7 @@ def prepare_resnet_backbone(backbone_type, pretrained='none'):
             hyper_blocks_to_keep,
             stride=2,
             pretrained=True,
-            pretrained_dataset='celeba',
+            pretrained_dataset='ms-celeba',
             progress=True,
             device="cpu",
             do_initial_max_pool=True,
@@ -422,7 +422,7 @@ def prepare_resnet_backbone(backbone_type, pretrained='none'):
             3,
             hyper_blocks_to_keep,
             stride=2,
-            pretrained=pretrained,
+            pretrained=False, # Explicitly set to False for 'none' case
             progress=True,
             device="cpu",
             do_initial_max_pool=True,
@@ -480,5 +480,43 @@ if __name__ == '__main__':
         print(f"      Details: {e}")
     except Exception as e:
         print(f"   ❌ Failed with an unexpected error: {e}")
+
+    print("\n--- Running prepare_resnet_backbone Test ---")
+
+    # --- Test Case 4: Create a non-pretrained resnet18-4 ---
+    print("\n4. Testing non-pretrained resnet18-4 creation...")
+    try:
+        model_prepared_no_pretrain = prepare_resnet_backbone('resnet18-4', pretrained='none')
+        print("   ✅ Success: Created non-pretrained resnet18-4.")
+        # Test forward pass
+        dummy_input = torch.randn(2, 3, 32, 32)
+        output = model_prepared_no_pretrain(dummy_input)
+        print(f"   ✅ Success: Forward pass completed with output shape: {output.shape}")
+    except Exception as e:
+        print(f"   ❌ Failed: {e}")
+
+    # --- Test Case 5: Create an ImageNet-pretrained resnet50-3 ---
+    print("\n5. Testing ImageNet-pretrained resnet50-3 creation...")
+    try:
+        model_prepared_imagenet = prepare_resnet_backbone('resnet50-3', pretrained='imagenet')
+        print("   ✅ Success: Created ImageNet-pretrained resnet50-3.")
+        # Test forward pass (note: pretrained on imagenet expects 7 channels in this implementation)
+        dummy_input = torch.randn(2, 7, 224, 224)
+        output = model_prepared_imagenet(dummy_input)
+        print(f"   ✅ Success: Forward pass completed with output shape: {output.shape}")
+    except Exception as e:
+        print(f"   ❌ Failed: {e}")
+
+    # --- Test Case 6: Test invalid pretrained argument ---
+    print("\n6. Testing invalid 'pretrained' argument...")
+    try:
+        prepare_resnet_backbone('resnet18-1', pretrained='invalid_option')
+        print(f"   ❌ Failed: Did not raise ValueError for invalid 'pretrained' argument.")
+    except ValueError as e:
+        print(f"   ✅ Success: Correctly raised ValueError.")
+        print(f"      Details: {e}")
+    except Exception as e:
+        print(f"   ❌ Failed with an unexpected error: {e}")
+
 
     print("\n--- Test Complete ---")
