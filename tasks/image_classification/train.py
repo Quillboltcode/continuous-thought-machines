@@ -66,6 +66,7 @@ def parse_args():
     parser.add_argument('--d_model', type=int, default=512, help='Dimension of the model.')
     parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate.')
     parser.add_argument('--backbone_type', type=str, default='resnet18-4', help='Type of backbone featureiser.')
+    parser.add_argument('--pretrained_backbone', action=argparse.BooleanOptionalAction, default=False, help='Use a pretrained backbone if True. FORK_NOTE: we trying use a pretrained backbone in the report')
     # CTM / LSTM specific
     parser.add_argument('--d_input', type=int, default=128, help='Dimension of the input (CTM, LSTM).')
     parser.add_argument('--heads', type=int, default=4, help='Number of attention heads (CTM, LSTM).')
@@ -271,6 +272,7 @@ if __name__=='__main__':
             memory_hidden_dims=args.memory_hidden_dims,
             do_layernorm_nlm=args.do_normalisation,
             backbone_type=args.backbone_type,
+            pretrained_backbone=args.pretrained_backbone,
             positional_embedding_type=args.positional_embedding_type,
             out_dims=args.out_dims,
             prediction_reshaper=prediction_reshaper,

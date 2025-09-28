@@ -52,6 +52,8 @@ class ContinuousThoughtMachine(nn.Module):
                         NOTE: we never set this to true in the paper. If you set this to true you will get strange behaviour,
                         but you can potentially encourage more periodic behaviour in the dynamics. Untested; be careful.
         backbone_type (str): Type of feature extraction backbone (e.g., 'resnet18-2', 'none').
+        pretrained_backbone (bool): Use a pretrained backbone if True.
+                        FORK_NOTE: we trying use a pretrained backbone in the report
         positional_embedding_type (str): Type of positional embedding for backbone features.
         out_dims (int): Output dimension size.
                         NOTE: projected from synchronisation!
@@ -90,6 +92,7 @@ class ContinuousThoughtMachine(nn.Module):
                  memory_hidden_dims,
                  do_layernorm_nlm,
                  backbone_type,
+                 pretrained_backbone,
                  positional_embedding_type,
                  out_dims,
                  prediction_reshaper=[-1],
@@ -109,6 +112,8 @@ class ContinuousThoughtMachine(nn.Module):
         self.n_synch_out = n_synch_out
         self.n_synch_action = n_synch_action
         self.backbone_type = backbone_type
+        self.pretrained_backbone = pretrained_backbone
+        # FORK_NOTE: we trying use a pretrained backbone in the report
         self.out_dims = out_dims
         self.positional_embedding_type = positional_embedding_type
         self.neuron_select_type = neuron_select_type
@@ -295,7 +300,7 @@ class ContinuousThoughtMachine(nn.Module):
             d_backbone = self.get_d_backbone()
             self.backbone = ParityBackbone(n_embeddings=2, d_embedding=d_backbone)
         elif 'resnet' in self.backbone_type:
-            self.backbone = prepare_resnet_backbone(self.backbone_type)
+            self.backbone = prepare_resnet_backbone(self.backbone_type, pretrained=self.pretrained_backbone)
         elif self.backbone_type == 'none':
             self.backbone = nn.Identity()
         else:
