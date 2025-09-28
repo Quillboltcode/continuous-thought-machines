@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import os
-from models.modules import Identity
+# from models.modules import Identity
 import torchvision.models as models
 
 __all__ = [
@@ -288,22 +288,45 @@ def _resnet(in_channels, feature_scales, stride, arch, block, layers, pretrained
     if pretrained:
         if pretrained_dataset.lower() == 'imagenet':
             # Load the standard 3-channel pretrained model
-            pretrained_model = models.__dict__[arch](pretrained=True)
-            pretrained_state_dict = pretrained_model.state_dict()
+            # Use the recommended weights argument to avoid UserWarning
+            if arch == "resnet18":
+                weights_enum = models.ResNet18_Weights.IMAGENET1K_V1
+            elif arch == "resnet34":
+                weights_enum = models.ResNet34_Weights.IMAGENET1K_V1
+            elif arch == "resnet50":
+                weights_enum = models.ResNet50_Weights.IMAGENET1K_V1
+            elif arch == "resnet101":
+                weights_enum = models.ResNet101_Weights.IMAGENET1K_V1
+            elif arch == "resnet152":
+                weights_enum = models.ResNet152_Weights.IMAGENET1K_V1
+            else:
+                raise ValueError(f"Unsupported ResNet architecture for ImageNet weights: {arch}")
+
+            pretrained_tv_model = models.__dict__[arch](weights=weights_enum)
+            pretrained_state_dict = pretrained_tv_model.state_dict()
 
             # Create our new model with the desired number of input channels
             model = ResNet(in_channels, feature_scales, stride, block, layers, do_initial_max_pool=do_initial_max_pool, **kwargs)
             
-            # If the input channels are not 3, we need to adapt the first convolutional layer's weights
-            if in_channels != 3:
-                # Get the weights of the first conv layer from the pretrained model
-                conv1_weights = pretrained_state_dict['conv1.weight']
-                # Average the weights across the 3 input channels
-                avg_weights = conv1_weights.mean(dim=1, keepdim=True)
-                # Repeat the averaged weights for the new number of input channels
-                new_conv1_weights = avg_weights.repeat(1, in_channels, 1, 1)
-                # Update the state dict with the new conv1 weights
-                pretrained_state_dict['conv1.weight'] = new_conv1_weights
+            # Adapt conv1.weight from torchvision model (kernel_size=7) to our custom model (kernel_size=3)
+            tv_conv1_weights = pretrained_state_dict['conv1.weight'] # Expected shape: [64, 3, 7, 7]
+            
+            # Crop the 7x7 kernel to 3x3 (take the center)
+            # (7 - 3) // 2 = 2, so crop from index 2 to 2+3=5
+            cropped_conv1_weights = tv_conv1_weights[:, :, 2:5, 2:5] # Resulting shape: [64, 3, 3, 3]
+
+            # Handle different input channels if the custom model expects something other than 3
+            if in_channels == 3:
+                adapted_conv1_weights = cropped_conv1_weights
+            else:
+                # Average across the 3 input channels of the cropped weights
+                # This creates a single-channel kernel that represents the average of the 3 channels
+                avg_3ch_conv1_weights = cropped_conv1_weights.mean(dim=1, keepdim=True) # Shape: [64, 1, 3, 3]
+                # Repeat this single-channel kernel for the desired number of input channels
+                adapted_conv1_weights = avg_3ch_conv1_weights.repeat(1, in_channels, 1, 1) # Shape: [64, in_channels, 3, 3]
+            
+            # Update the state dict with the adapted conv1 weights
+            pretrained_state_dict['conv1.weight'] = adapted_conv1_weights
             
             # Load the (potentially modified) state dict. strict=False is important.
             model.load_state_dict(pretrained_state_dict, strict=False)
@@ -397,7 +420,7 @@ def prepare_resnet_backbone(backbone_type, pretrained='none'):
     # Create the ResNet backbone
     if pretrained == 'imagenet':
         backbone = resnet_family(
-            7,
+            3,
             hyper_blocks_to_keep,
             stride=2,
             pretrained=True,
@@ -501,7 +524,7 @@ if __name__ == '__main__':
         model_prepared_imagenet = prepare_resnet_backbone('resnet50-3', pretrained='imagenet')
         print("   ✅ Success: Created ImageNet-pretrained resnet50-3.")
         # Test forward pass (note: pretrained on imagenet expects 7 channels in this implementation)
-        dummy_input = torch.randn(2, 7, 224, 224)
+        dummy_input = torch.randn(2, 3, 224, 224)
         output = model_prepared_imagenet(dummy_input)
         print(f"   ✅ Success: Forward pass completed with output shape: {output.shape}")
     except Exception as e:
