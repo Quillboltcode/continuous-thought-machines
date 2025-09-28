@@ -53,7 +53,7 @@ class ContinuousThoughtMachine(nn.Module):
                         but you can potentially encourage more periodic behaviour in the dynamics. Untested; be careful.
         backbone_type (str): Type of feature extraction backbone (e.g., 'resnet18-2', 'none').
         pretrained_backbone (bool): Use a pretrained backbone if True.
-                        FORK_NOTE: we trying use a pretrained backbone in the report
+                        NOTE: we trying use a pretrained backbone in the report
         positional_embedding_type (str): Type of positional embedding for backbone features.
         out_dims (int): Output dimension size.
                         NOTE: projected from synchronisation!

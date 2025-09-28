@@ -378,7 +378,7 @@ def resnet152(in_channels, feature_scales, stride=2, pretrained=False, pretraine
         feature_scales, stride, "resnet152", Bottleneck, [3, 4, 36, 3], pretrained, pretrained_dataset, progress, device, do_initial_max_pool, **kwargs
     )
 
-def prepare_resnet_backbone(backbone_type, pretrained=False):
+def prepare_resnet_backbone(backbone_type, pretrained='none'):
       
     resnet_family = resnet18 # Default
     if '34' in backbone_type: resnet_family = resnet34
@@ -386,24 +386,47 @@ def prepare_resnet_backbone(backbone_type, pretrained=False):
     if '101' in backbone_type: resnet_family = resnet101
     if '152' in backbone_type: resnet_family = resnet152
     
-    # Check for 'pretrained' flag in the backbone_type string
-    if 'pretrained' in backbone_type:
-        pretrained = True
+    # Check for pretrained options with 'imagenet' or 'celeba' or 'none' in pretrained
+    if pretrained not in ['none', 'imagenet', 'celeba', False]:
+        raise ValueError("pretrained must be one of 'none', 'imagenet', or 'celeba'")
 
     # Determine which ResNet blocks to keep
     # Filter out 'pretrained' before splitting to get the block number
     block_num_str = backbone_type.replace('-pretrained', '').split('-')[-1]
     hyper_blocks_to_keep = list(range(1, int(block_num_str) + 1)) if block_num_str.isdigit() else [1, 2, 3, 4]
-
-    backbone = resnet_family(
-        3,
-        hyper_blocks_to_keep,
-        stride=2,
-        pretrained=pretrained,
-        progress=True,
-        device="cpu",
-        do_initial_max_pool=True,
-    )
+    # Create the ResNet backbone
+    if pretrained == 'imagenet':
+        backbone = resnet_family(
+            7,
+            hyper_blocks_to_keep,
+            stride=2,
+            pretrained=True,
+            pretrained_dataset='imagenet',
+            progress=True,
+            device="cpu",
+            do_initial_max_pool=True,
+        )
+    elif pretrained == 'celeba':
+        backbone = resnet_family(
+            3,
+            hyper_blocks_to_keep,
+            stride=2,
+            pretrained=True,
+            pretrained_dataset='celeba',
+            progress=True,
+            device="cpu",
+            do_initial_max_pool=True,
+        )
+    else:
+        backbone = resnet_family(
+            3,
+            hyper_blocks_to_keep,
+            stride=2,
+            pretrained=pretrained,
+            progress=True,
+            device="cpu",
+            do_initial_max_pool=True,
+        )
 
     return backbone
 

@@ -66,7 +66,8 @@ def parse_args():
     parser.add_argument('--d_model', type=int, default=512, help='Dimension of the model.')
     parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate.')
     parser.add_argument('--backbone_type', type=str, default='resnet18-4', help='Type of backbone featureiser.')
-    parser.add_argument('--pretrained_backbone', action=argparse.BooleanOptionalAction, default=False, help='Use a pretrained backbone if True. FORK_NOTE: we trying use a pretrained backbone in the report')
+    parser.add_argument('--pretrained_backbone', type=str, default='none', help='Use a pretrained backbone one of none, imagenet, ms-celeba',
+                        choices=['none', 'imagenet', 'ms-celeba'])
     # CTM / LSTM specific
     parser.add_argument('--d_input', type=int, default=128, help='Dimension of the input (CTM, LSTM).')
     parser.add_argument('--heads', type=int, default=4, help='Number of attention heads (CTM, LSTM).')
