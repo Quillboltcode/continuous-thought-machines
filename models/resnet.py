@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import os
-# from models.modules import Identity
+from models.modules import Identity
 import torchvision.models as models
 
 __all__ = [

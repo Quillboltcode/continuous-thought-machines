@@ -183,13 +183,15 @@ def get_dataset(dataset, root):
         idx_order = np.argsort(np.array(list(train_data.class_to_idx.values())))
         class_labels = list(np.array(list(train_data.class_to_idx.keys()))[idx_order])
     elif dataset=='RAFDB':
-        # Using same normalization as CelebA
-        dataset_mean = [0.5, 0.5, 0.5]
-        dataset_std = [0.5, 0.5, 0.5]
+        # Using same normalization as ImageNet for RAF-DB
+        dataset_mean = [0.485, 0.456, 0.406]
+        dataset_std = [0.229, 0.224, 0.225]
         normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
-
+        # Version 2: Add augmentations
         train_transform = transforms.Compose(
-            [transforms.ToTensor(),
+            [transforms.Resize((224, 224)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
             normalize,
             ])
         test_transform = transforms.Compose(
