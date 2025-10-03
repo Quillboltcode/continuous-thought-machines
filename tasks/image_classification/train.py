@@ -187,9 +187,9 @@ def get_dataset(dataset, root):
         dataset_mean = [0.485, 0.456, 0.406]
         dataset_std = [0.229, 0.224, 0.225]
         normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
-        # Version 2: Add augmentations
+        #  Version 2: Add augmentations RandomHorizontalFlip, Resize to 100x100 fall back to version 2 nb
         train_transform = transforms.Compose(
-            [transforms.Resize((224, 224)),
+            [transforms.Resize((100, 100)),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize,
