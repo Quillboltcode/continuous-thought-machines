@@ -549,15 +549,22 @@ if __name__=='__main__':
                          current_train_accuracies = (all_targets == all_predictions).mean() # Shape scalar
                          train_accuracies.append(current_train_accuracies)
                     
-                    train_acc_log = current_train_accuracies[-1] if args.model in ["ctm", "lstm"] else current_train_accuracies
-                    train_acc_most_certain_log = f"{current_train_accuracies_most_certain:.4f}" if args.model in ["ctm", "lstm"] else "N/A"
-                    
-                    wandb.log({
+                    log_dict = {
                         'Train Loss': train_losses[-1],
-                        'Train Accuracy': train_acc_log,
-                        'Train Most Certain Accuracy': train_acc_most_certain_log,
                         'Learning Rate': current_lr,
-                        }, step=bi)
+                    }
+
+                    if args.model in ["ctm", "lstm"]:
+                        log_dict['Train Accuracy (Most Certain)'] = current_train_accuracies_most_certain
+                        for i, acc in enumerate(current_train_accuracies):
+                            log_dict[f'Train Accuracy (Tick {i})'] = acc
+                    else: # FF
+                        log_dict['Train Accuracy'] = current_train_accuracies
+                    
+                    wandb.log(log_dict, step=bi)
+
+
+
 
                 del these_predictions
                 
@@ -616,15 +623,18 @@ if __name__=='__main__':
                          current_test_accuracies = (all_targets == all_predictions).mean()
                          test_accuracies.append(current_test_accuracies)
                     
-                    test_acc_log = current_test_accuracies[-1] if args.model in ["ctm", "lstm"] else current_test_accuracies
-                    test_acc_most_certain_log = f"{current_test_accuracies_most_certain:.4f}" if args.model in ["ctm", "lstm"] else "N/A"
-
-                    wandb.log({
+                    log_dict = {
                         'Test Loss': test_losses[-1],
-                        'Test Accuracy': test_acc_log,
-                        'Test Most Certain Accuracy': test_acc_most_certain_log,
-                        }, step=bi)
+                    }
 
+                    if args.model in ["ctm", "lstm"]:
+                        log_dict['Test Accuracy (Most Certain)'] = current_test_accuracies_most_certain
+                        for i, acc in enumerate(current_test_accuracies):
+                            log_dict[f'Test Accuracy (Tick {i})'] = acc
+                    else: # FF
+                        log_dict['Test Accuracy'] = current_test_accuracies
+
+                    wandb.log(log_dict, step=bi)
 
                 # Plotting (conditional)
                 figacc = plt.figure(figsize=(10, 10))
@@ -743,7 +753,7 @@ if __name__=='__main__':
                 if args.model in ['ctm', 'lstm']:
                     checkpoint_data['train_accuracies_most_certain'] = train_accuracies_most_certain
                     checkpoint_data['test_accuracies_most_certain'] = test_accuracies_most_certain
-                wandb.log({"Checkpoint saved": True}, step=bi)
+                
                 torch.save(checkpoint_data, f'{args.log_dir}/checkpoint.pt')
 
             pbar.update(1)
