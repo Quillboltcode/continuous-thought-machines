@@ -22,3 +22,10 @@ examples/*
 checkpoints
 
 *.pth
+wandb
+.docs/
+.DS_Store
+colab.ipynb
+
+.cursor/*
+.claude/*

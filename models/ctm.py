@@ -60,6 +60,7 @@ class ContinuousThoughtMachine(nn.Module):
         prediction_reshaper (list): Shape for reshaping predictions before certainty calculation (task-specific).
                         NOTE: this is used to compute certainty and is needed when applying softmax for probabilities
         dropout (float): Dropout rate.
+        synchronisation_type (str): The type of synchronisation to use, 'ctm' for original or 'ema' for exponential moving average.
         neuron_select_type (str): Neuron selection strategy ('first-last', 'random', 'random-pairing').
                         NOTE: some of this is legacy from our experimentation, but all three strategies are valid and useful. 
                             We dilineate exactly which strategies we use per experiment in the paper. 
@@ -78,7 +79,7 @@ class ContinuousThoughtMachine(nn.Module):
                         snapshot representation' (see paper) is difficult. This alleviates that. 
                         NOTE: works fine when set to 0.
     """                               
-
+    # add halting head for thought through time 
     def __init__(self,
                  iterations,
                  d_model,
@@ -98,6 +99,7 @@ class ContinuousThoughtMachine(nn.Module):
                  prediction_reshaper=[-1],
                  dropout=0,
                  dropout_nlm=None,
+                 synchronisation_type='ctm',
                  neuron_select_type='random-pairing',  
                  n_random_pairing_self=0,
                  ):
@@ -118,6 +120,7 @@ class ContinuousThoughtMachine(nn.Module):
         self.positional_embedding_type = positional_embedding_type
         self.neuron_select_type = neuron_select_type
         self.memory_length = memory_length
+        self.synchronisation_type = synchronisation_type
         dropout_nlm = dropout if dropout_nlm is None else dropout_nlm
 
         # --- Assertions ---
@@ -150,6 +153,17 @@ class ContinuousThoughtMachine(nn.Module):
         if self.synch_representation_size_action:  # if not zero
             self.set_synchronisation_parameters('action', self.n_synch_action, n_random_pairing_self)
         self.set_synchronisation_parameters('out', self.n_synch_out, n_random_pairing_self)
+
+        # Maps the Synchronization Vector -> Probability of Stopping (0 to 1)
+        # We use a bottleneck structure to force it to learn a compact decision rule.
+        # ==============================================================================
+        self.halting_head = nn.Sequential(
+            nn.Linear(self.synch_representation_size_out, 64), # Bottleneck
+            nn.GELU(),
+            nn.Linear(64, 1) # Logit
+            # We will apply Sigmoid in forward()
+        )
+
 
         # --- Output Procesing ---
         self.output_projector = nn.Sequential(nn.LazyLinear(self.out_dims))
@@ -216,9 +230,20 @@ class ContinuousThoughtMachine(nn.Module):
         if decay_alpha is None or decay_beta is None:
             decay_alpha = pairwise_product
             decay_beta = torch.ones_like(pairwise_product)
+            if self.synchronisation_type == 'ema':
+                decay_alpha = pairwise_product
+                decay_beta = None # Not used in EMA
+            else: # ctm
+                decay_alpha = pairwise_product
+                decay_beta = torch.ones_like(pairwise_product)
         else:
             decay_alpha = r * decay_alpha + pairwise_product
             decay_beta = r * decay_beta + 1
+            if self.synchronisation_type == 'ema':
+                decay_alpha = r * decay_alpha + (1 - r) * pairwise_product
+            else: # ctm
+                decay_alpha = r * decay_alpha + pairwise_product
+                decay_beta = r * decay_beta + 1
         
         synchronisation = decay_alpha / (torch.sqrt(decay_beta))
         return synchronisation, decay_alpha, decay_beta
@@ -458,6 +483,9 @@ class ContinuousThoughtMachine(nn.Module):
         
         assert self.positional_embedding_type in VALID_POSITIONAL_EMBEDDING_TYPES + ['none'], \
             f"Invalid positional_embedding_type: {self.positional_embedding_type}"
+
+        assert self.synchronisation_type in ['ctm', 'ema'], \
+            f"Invalid synchronisation_type: {self.synchronisation_type}"
         
         if self.neuron_select_type == 'first-last':
             assert self.d_model >= (self.n_synch_out + self.n_synch_action), \
@@ -477,6 +505,21 @@ class ContinuousThoughtMachine(nn.Module):
         else:
             raise ValueError(f"Invalid neuron selection type: {self.neuron_select_type}")
         return synch_representation_size
+
+    def compute_flops(self, input_shape, batch_size=1):
+        """
+        Compute FLOPs (floating point operations) for this CTM model.
+        Accounts for the iterative forward pass loop.
+        
+        Args:
+            input_shape: Tuple defining input shape excluding batch dimension (e.g., (3, 224, 224))
+            batch_size: Batch size for FLOP calculation (default: 1)
+        
+        Returns:
+            dict: Dictionary containing total FLOPs and breakdown by component
+        """
+        from models.utils import compute_ctm_flops
+        return compute_ctm_flops(self, input_shape, batch_size)
 
 
 
@@ -502,7 +545,9 @@ class ContinuousThoughtMachine(nn.Module):
         # --- Prepare Storage for Outputs per Iteration ---
         predictions = torch.empty(B, self.out_dims, self.iterations, device=device, dtype=torch.float32)
         certainties = torch.empty(B, 2, self.iterations, device=device, dtype=torch.float32)
-
+        
+        # Storage for Halting Probabilities
+        halt_probs = torch.empty(B, 1, self.iterations, device=device, dtype=torch.float32)
         # --- Initialise Recurrent Synch Values  ---
         decay_alpha_action, decay_beta_action = None, None
         self.decay_params_action.data = torch.clamp(self.decay_params_action, 0, 15)  # Fix from github user: kuviki
@@ -543,6 +588,15 @@ class ContinuousThoughtMachine(nn.Module):
             current_prediction = self.output_projector(synchronisation_out)
             current_certainty = self.compute_certainty(current_prediction)
 
+            # [NEW] Compute Halting Probability
+            # ==============================================================================
+            # 1. Calculate raw probability for this step
+            current_halt_logit = self.halting_head(synchronisation_out)
+            current_halt_prob = torch.sigmoid(current_halt_logit)
+            
+            # Store it
+            halt_probs[..., stepi] = current_halt_prob
+            # ================================================================
             predictions[..., stepi] = current_prediction
             certainties[..., stepi] = current_certainty
 
@@ -556,5 +610,70 @@ class ContinuousThoughtMachine(nn.Module):
 
         # --- Return Values ---
         if track:
-            return predictions, certainties, (np.array(synch_out_tracking), np.array(synch_action_tracking)), np.array(pre_activations_tracking), np.array(post_activations_tracking), np.array(attention_tracking)
+            return predictions, certainties, halt_probs,(np.array(synch_out_tracking), np.array(synch_action_tracking)), np.array(pre_activations_tracking), np.array(post_activations_tracking), np.array(attention_tracking)
         return predictions, certainties, synchronisation_out
+
+if __name__ == '__main__':
+    # Simple test to verify model runs
+    model = ContinuousThoughtMachine(
+        iterations=10,
+        d_model=128,
+        d_input=64,
+        heads=4,
+        n_synch_out=32,
+        n_synch_action=32,
+        synapse_depth=3,
+        memory_length=5,
+
+        
+        deep_nlms=True,
+        memory_hidden_dims=64,
+        do_layernorm_nlm=False,
+        backbone_type='none',
+        pretrained_backbone='none',
+        positional_embedding_type='none',
+        out_dims=10,
+        prediction_reshaper=[-1],
+        dropout=0.1,
+        synchronisation_type='ctm',
+        neuron_select_type='random-pairing',
+        n_random_pairing_self=8,
+    )
+    dummy_input = torch.randn(2, 3, 224, 224)  # Example input tensor
+    outputs = model(dummy_input, track=True)
+    print("Model output shapes:")
+    for output in outputs:
+        if isinstance(output, tuple) or isinstance(output, list):
+            print([o.shape for o in output])
+        else:
+            print(output.shape)
+    
+    # Test FLOPs calculation
+    print("\n" + "="*60)
+    print("FLOPs Calculation:")
+    print("="*60)
+    input_shape = (3, 224, 224)  # Shape excluding batch dimension
+    flops_result = model.compute_flops(input_shape, batch_size=1)
+    
+    print(f"\nTotal FLOPs: {flops_result['total']:,}")
+    print(f"\nBreakdown:")
+    print(f"  Outside loop: {flops_result['breakdown']['outside_loop']:,}")
+    print(f"  Per iteration: {flops_result['per_iteration']:,}")
+    print(f"  Inside loop total ({model.iterations} iterations): {flops_result['breakdown']['inside_loop_total']:,}")
+    print(f"\nComponent breakdown:")
+    if flops_result.get('initial_rgb', 0) > 0:
+        print(f"  Initial RGB: {flops_result['initial_rgb']:,}")
+    if flops_result.get('backbone', 0) > 0:
+        print(f"  Backbone: {flops_result['backbone']:,}")
+    if flops_result.get('positional_embedding', 0) > 0:
+        print(f"  Positional embedding: {flops_result['positional_embedding']:,}")
+    if flops_result.get('kv_proj', 0) > 0:
+        print(f"  KV projection: {flops_result['kv_proj']:,}")
+    if flops_result.get('initial_synch', 0) > 0:
+        print(f"  Initial synchronisation: {flops_result['initial_synch']:,}")
+    
+    # Test with different batch sizes
+    print(f"\nFLOPs scaling with batch size:")
+    for bs in [1, 2, 4]:
+        flops_bs = model.compute_flops(input_shape, batch_size=bs)
+        print(f"  Batch size {bs}: {flops_bs['total']:,} FLOPs")

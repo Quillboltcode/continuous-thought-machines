@@ -7,7 +7,7 @@ authors = [
 ]
 dependencies = [
     "numpy",
-    "torch",
+    "torch>=2.8",
     "torchvision",
     "matplotlib",
     "seaborn",
@@ -21,6 +21,10 @@ dependencies = [
     "minigrid",
     "datasets",
     "autoclip",
+    "timm>=1.0.22",
+    "wandb>=0.23.0",
+    "pytest>=9.0.2",
+    "fvcore>=0.1.5",
 ]
 readme = "README.md"
 requires-python = ">=3.12"
@@ -31,3 +35,6 @@ build-backend = "hatchling.build"
 
 [tool.ruff.lint.per-file-ignores]
 "tasks/image_classification/*" = ["E402"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["Cattn.py"]

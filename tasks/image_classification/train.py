@@ -22,6 +22,7 @@ from models.lstm import LSTMBaseline
 from models.ff import FFBaseline
 from tasks.image_classification.plotting import plot_neural_dynamics, make_classification_gif
 from utils.housekeeping import set_seed, zip_python_code
+from models.utils import PonderNetLoss as PonderLoss
 from utils.losses import image_classification_loss # Used by CTM, LSTM
 from utils.schedulers import WarmupCosineAnnealingLR, WarmupMultiStepLR, warmup
 
@@ -78,6 +79,8 @@ def parse_args():
                                  'multi-learnable-fourier',
                                  'custom-rotational'])
     # CTM specific
+    parser.add_argument('--use_ponder_loss', action=argparse.BooleanOptionalAction, default=False, help='Use PonderLoss for CTM.')
+    parser.add_argument('--lambda_p', type=float, default=0.2, help='Lambda for PonderLoss geometric distribution.')
     parser.add_argument('--synapse_depth', type=int, default=4, help='Depth of U-NET model for synapse. 1=linear, no unet (CTM only).')
     parser.add_argument('--n_synch_out', type=int, default=512, help='Number of neurons to use for output synch (CTM only).')
     parser.add_argument('--n_synch_action', type=int, default=512, help='Number of neurons to use for observation/action synch (CTM only).')
@@ -258,6 +261,10 @@ if __name__=='__main__':
     else:
         device = 'cpu'
     print(f'Running model {args.model} on {device}')
+
+    # Conditionally create PonderLoss
+    if args.model == 'ctm' and args.use_ponder_loss:
+        ponder_loss = PonderLoss(lambda_p=args.lambda_p, beta=0.01).to(device)
 
     # Build model conditionally
     model = None
@@ -445,9 +452,16 @@ if __name__=='__main__':
 
                 if args.model == 'ctm':
                     predictions, certainties, synchronisation = model(inputs)
-                    loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
-                    accuracy = (predictions.argmax(1)[torch.arange(predictions.size(0), device=predictions.device),where_most_certain] == targets).float().mean().item()
-                    pbar_desc = f'CTM Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Where_certain={where_most_certain.float().mean().item():0.2f}+-{where_most_certain.float().std().item():0.2f} ({where_most_certain.min().item():d}<->{where_most_certain.max().item():d})'
+                    if args.use_ponder_loss:
+                        loss, p_t = ponder_loss(predictions, certainties, targets)
+                        where_to_eval = p_t.argmax(-1)
+                        accuracy = (predictions.argmax(1)[torch.arange(predictions.size(0), device=predictions.device), where_to_eval] == targets).float().mean().item()
+                        avg_steps = (p_t * torch.arange(1, p_t.shape[1] + 1, device=p_t.device)).sum(-1).mean().item()
+                        pbar_desc = f'CTM PonderLoss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Avg_steps={avg_steps:0.2f}'
+                    else:
+                        loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
+                        accuracy = (predictions.argmax(1)[torch.arange(predictions.size(0), device=predictions.device),where_most_certain] == targets).float().mean().item()
+                        pbar_desc = f'CTM Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Where_certain={where_most_certain.float().mean().item():0.2f}+-{where_most_certain.float().std().item():0.2f} ({where_most_certain.min().item():d}<->{where_most_certain.max().item():d})'
 
                 elif args.model == 'lstm':
                     predictions, certainties, synchronisation = model(inputs)
@@ -512,9 +526,15 @@ if __name__=='__main__':
                             # Model-specific forward and loss for evaluation
                             if args.model == 'ctm':
                                 these_predictions, certainties, _ = model(inputs)
-                                loss, where_most_certain = image_classification_loss(these_predictions, certainties, targets, use_most_certain=True)
-                                all_predictions_list.append(these_predictions.argmax(1).detach().cpu().numpy()) # Shape (B, T)
-                                all_predictions_most_certain_list.append(these_predictions.argmax(1)[torch.arange(these_predictions.size(0), device=these_predictions.device), where_most_certain].detach().cpu().numpy()) # Shape (B,)
+                                if args.use_ponder_loss:
+                                    loss, p_t = ponder_loss(these_predictions, certainties.unsqueeze(1), targets)
+                                    where_to_eval = p_t.argmax(-1)
+                                    all_predictions_list.append(these_predictions.argmax(1).detach().cpu().numpy()) # Shape (B, T)
+                                    all_predictions_most_certain_list.append(these_predictions.argmax(1)[torch.arange(these_predictions.size(0), device=these_predictions.device), where_to_eval].detach().cpu().numpy()) # Shape (B,)
+                                else:
+                                    loss, where_most_certain = image_classification_loss(these_predictions, certainties, targets, use_most_certain=True)
+                                    all_predictions_list.append(these_predictions.argmax(1).detach().cpu().numpy()) # Shape (B, T)
+                                    all_predictions_most_certain_list.append(these_predictions.argmax(1)[torch.arange(these_predictions.size(0), device=these_predictions.device), where_most_certain].detach().cpu().numpy()) # Shape (B,)
 
                             elif args.model == 'lstm':
                                 these_predictions, certainties, _ = model(inputs)
@@ -588,9 +608,15 @@ if __name__=='__main__':
                             # Model-specific forward and loss for evaluation
                             if args.model == 'ctm':
                                 these_predictions, certainties, _ = model(inputs)
-                                loss, where_most_certain = image_classification_loss(these_predictions, certainties, targets, use_most_certain=True)
-                                all_predictions_list.append(these_predictions.argmax(1).detach().cpu().numpy())
-                                all_predictions_most_certain_list.append(these_predictions.argmax(1)[torch.arange(these_predictions.size(0), device=these_predictions.device), where_most_certain].detach().cpu().numpy())
+                                if args.use_ponder_loss:
+                                    loss, p_t = ponder_loss(these_predictions, certainties.unsqueeze(1), targets)
+                                    where_to_eval = p_t.argmax(-1)
+                                    all_predictions_list.append(these_predictions.argmax(1).detach().cpu().numpy())
+                                    all_predictions_most_certain_list.append(these_predictions.argmax(1)[torch.arange(these_predictions.size(0), device=these_predictions.device), where_to_eval].detach().cpu().numpy())
+                                else:
+                                    loss, where_most_certain = image_classification_loss(these_predictions, certainties, targets, use_most_certain=True)
+                                    all_predictions_list.append(these_predictions.argmax(1).detach().cpu().numpy())
+                                    all_predictions_most_certain_list.append(these_predictions.argmax(1)[torch.arange(these_predictions.size(0), device=these_predictions.device), where_most_certain].detach().cpu().numpy())
 
                             elif args.model == 'lstm':
                                 these_predictions, certainties, _ = model(inputs)
