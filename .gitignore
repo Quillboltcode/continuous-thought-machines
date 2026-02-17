@@ -29,3 +29,5 @@ colab.ipynb
 
 .cursor/*
 .claude/*
+add_fer_plus_support.py
+fix_indentation.py

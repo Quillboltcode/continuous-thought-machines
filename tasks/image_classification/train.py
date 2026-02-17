@@ -123,13 +123,17 @@ def parse_args():
     parser.add_argument('--n_test_batches', type=int, default=20, help='How many minibatches to approx metrics. Set to -1 for full eval')
     parser.add_argument('--device', type=int, nargs='+', default=[-1], help='List of GPU(s) to use. Set to -1 to use CPU.')
     parser.add_argument('--use_amp', action=argparse.BooleanOptionalAction, default=False, help='AMP autocast.')
-
+    # Train/Val/Test split options
+    parser.add_argument('--val_split_ratio', type=float, default=0.1, help='Ratio of training data to use for validation (0.0-1.0).')
+    parser.add_argument('--use_test_as_val', action=argparse.BooleanOptionalAction, default=False, help='Use original test set as validation instead of splitting train.')
+    parser.add_argument('--final_test_eval', action=argparse.BooleanOptionalAction, default=False, help='Run final evaluation on test set after training.')
+    parser.add_argument('--save_best_model', action=argparse.BooleanOptionalAction, default=False, help='Save best model based on validation performance.')
 
     args = parser.parse_args()
     return args
 
 
-def get_dataset(dataset, root):
+def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False):
     if dataset=='imagenet':
         dataset_mean = [0.485, 0.456, 0.406]
         dataset_std = [0.229, 0.224, 0.225]
@@ -164,9 +168,28 @@ def get_dataset(dataset, root):
             [transforms.ToTensor(),
             normalize,
             ])
-        train_data = datasets.CIFAR10(root, train=True, transform=train_transform, download=True)
+        full_train_data = datasets.CIFAR10(root, train=True, transform=train_transform, download=True)
         test_data = datasets.CIFAR10(root, train=False, transform=test_transform, download=True)
         class_labels = ['air', 'auto', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
+        
+        if use_test_as_val:
+            # Use original test set as validation
+            train_data = full_train_data
+            val_data = test_data
+            test_data = None
+        elif val_split_ratio > 0.0:
+            # Split training data into train/val
+            train_size = int((1.0 - val_split_ratio) * len(full_train_data))
+            val_size = len(full_train_data) - train_size
+            train_data, val_data = torch.utils.data.random_split(
+                full_train_data, [train_size, val_size], 
+                generator=torch.Generator().manual_seed(412)  # Fixed seed for reproducibility
+            )
+            test_data = test_data  # Keep original test set
+        else:
+            train_data = full_train_data
+            val_data = None
+            test_data = test_data
     elif dataset=='cifar100':
         dataset_mean = [0.5070751592371341, 0.48654887331495067, 0.4409178433670344]
         dataset_std = [0.2673342858792403, 0.2564384629170882, 0.27615047132568393]
@@ -185,7 +208,54 @@ def get_dataset(dataset, root):
         test_data = datasets.CIFAR100(root, train=False, transform=test_transform, download=True)
         idx_order = np.argsort(np.array(list(train_data.class_to_idx.values())))
         class_labels = list(np.array(list(train_data.class_to_idx.keys()))[idx_order])
-    elif dataset=='RAFDB':
+    elif dataset in ['RAFDB', 'FerPlusPlus']:
+        # Using same normalization as ImageNet for RAF-DB
+        dataset_mean = [0.485, 0.456, 0.406]
+        dataset_std = [0.229, 0.224, 0.225]
+        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
+        # Version 2: Add augmentations RandomHorizontalFlip, Resize to 100x100 fall back to version 2 nb
+        train_transform = transforms.Compose(
+            [transforms.Resize((100, 100)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+            ])
+        test_transform = transforms.Compose(
+            [transforms.ToTensor(),
+            normalize,
+            ])
+        train_data = datasets.ImageFolder(os.path.join(root, 'train'), transform=train_transform)
+        val_data = datasets.ImageFolder(os.path.join(root, 'val'), transform=test_transform)
+        test_data = datasets.ImageFolder(os.path.join(root, 'test'), transform=test_transform)
+        # The RAF-DB dataset uses 1-indexed numerical labels for its 7 basic emotions.
+        # ImageFolder will read these as class names '1', '2', etc.
+        # 1-Surprise, 2-Fear, 3-Disgust, 4-Happiness, 5-Sadness, 6-Anger, 7-Neutral
+        # We hardcode the correct text labels here in the official order.
+        class_labels = ['Surprise',
+                        'Fear',
+                        'Disgust',
+                        'Happiness',
+                        'Sadness',
+                        'Anger',
+                        'Neutral']
+        
+        if use_test_as_val:
+            # Use original test set as validation
+            val_data = test_data
+            test_data = None
+        elif val_split_ratio > 0.0:
+            # Split training data into train/val
+            train_size = int((1.0 - val_split_ratio) * len(train_data))
+            val_size = len(train_data) - train_size
+            train_data, val_data = torch.utils.data.random_split(
+                train_data, [train_size, val_size], 
+                generator=torch.Generator().manual_seed(412)  # Fixed seed for reproducibility
+            )
+            # test_data remains test_data (None)
+        else:
+            # Use original splits as provided
+            test_data = test_data  # Keep original test set
+    
         # Using same normalization as ImageNet for RAF-DB
         dataset_mean = [0.485, 0.456, 0.406]
         dataset_std = [0.229, 0.224, 0.225]
@@ -217,7 +287,7 @@ def get_dataset(dataset, root):
     else:
         raise NotImplementedError
 
-    return train_data, test_data, class_labels, dataset_mean, dataset_std
+    return train_data, val_data, test_data, class_labels, dataset_mean, dataset_std
 
 
 
@@ -239,11 +309,22 @@ if __name__=='__main__':
     assert args.dataset in ['cifar10', 'cifar100', 'imagenet', 'RAFDB'], f'Need to be one of cifar10, cifar100, imagenet, RAFDB, got {args.dataset}'
 
     # Data
-    train_data, test_data, class_labels, dataset_mean, dataset_std = get_dataset(args.dataset, args.data_root)
+    train_data, val_data, test_data, class_labels, dataset_mean, dataset_std = get_dataset(args.dataset, args.data_root, args.val_split_ratio, args.use_test_as_val)
     
     num_workers_test = 1 # Defaulting to 1, change if needed
     trainloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers_train)
-    testloader = torch.utils.data.DataLoader(test_data, batch_size=args.batch_size_test, shuffle=True, num_workers=num_workers_test, drop_last=False)
+    
+    # Handle validation set
+    if val_data is not None:
+        valloader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_test, shuffle=False, num_workers=num_workers_test, drop_last=False)
+    else:
+        valloader = None
+    
+    # Handle test set (if available)
+    if test_data is not None:
+        testloader = torch.utils.data.DataLoader(test_data, batch_size=args.batch_size_test, shuffle=False, num_workers=num_workers_test, drop_last=False)
+    else:
+        testloader = None
     
     prediction_reshaper = [-1]  # Problem specific
     args.out_dims = len(class_labels)
