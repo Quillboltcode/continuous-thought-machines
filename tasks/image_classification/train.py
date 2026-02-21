@@ -256,35 +256,6 @@ def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False):
         else:
             # Use original splits as provided
             test_data = test_data  # Keep original test set
-    
-        # Using same normalization as ImageNet for RAF-DB
-        dataset_mean = [0.485, 0.456, 0.406]
-        dataset_std = [0.229, 0.224, 0.225]
-        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
-        #  Version 2: Add augmentations RandomHorizontalFlip, Resize to 100x100 fall back to version 2 nb
-        train_transform = transforms.Compose(
-            [transforms.Resize((100, 100)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-            ])
-        test_transform = transforms.Compose(
-            [transforms.ToTensor(),
-            normalize,
-            ])
-        train_data = datasets.ImageFolder(os.path.join(root, 'train'), transform=train_transform)
-        test_data = datasets.ImageFolder(os.path.join(root, 'test'), transform=test_transform)
-        # The RAF-DB dataset uses 1-indexed numerical labels for its 7 basic emotions.
-        # ImageFolder will read these as class names '1', '2', etc.
-        # 1-Surprise, 2-Fear, 3-Disgust, 4-Happiness, 5-Sadness, 6-Anger, 7-Neutral
-        # We hardcode the correct text labels here in the official order.
-        class_labels = ['Surprise',
-                        'Fear',
-                        'Disgust',
-                        'Happiness',
-                        'Sadness',
-                        'Anger',
-                        'Neutral']
     else:
         raise NotImplementedError
 
@@ -307,7 +278,7 @@ if __name__=='__main__':
         name=f"{args.model}_{args.dataset}_bs{args.batch_size}_lr{args.lr}_iters{args.training_iterations}", 
         reinit=True)
     wandb.log({"Logging initialized": True})
-    assert args.dataset in ['cifar10', 'cifar100', 'imagenet', 'RAFDB'], f'Need to be one of cifar10, cifar100, imagenet, RAFDB, got {args.dataset}'
+    assert args.dataset in ['cifar10', 'cifar100', 'imagenet', 'RAFDB', 'FerPlusPlus'], f'Need to be one of cifar10, cifar100, imagenet, RAFDB, FerPlusPlus, got {args.dataset}'
 
     # Data
     train_data, val_data, test_data, class_labels, dataset_mean, dataset_std = get_dataset(args.dataset, args.data_root, args.val_split_ratio, args.use_test_as_val)
