@@ -228,7 +228,6 @@ class SuperLinear(nn.Module):
         # b1: (1, D=N neurons, H)
         # einsum result: (B, D, H)
         # Applying bias requires matching shapes, b1 is broadcasted.
-        print(f'Einsum shapes: out={out.shape}, w1={self.w1.shape}')
         out = torch.einsum('BDM,MHD->BDH', out, self.w1) + self.b1
 
         # Squeeze the output dimension (assumed to be 1 usually) and scale by T
