@@ -23,6 +23,7 @@ from models.ff import FFBaseline
 from tasks.image_classification.plotting import plot_neural_dynamics, make_classification_gif
 from utils.housekeeping import set_seed, zip_python_code
 from models.utils import PonderNetLoss as PonderLoss
+from models.utils import compute_ctm_flops, count_parameters
 from utils.losses import image_classification_loss # Used by CTM, LSTM
 from utils.schedulers import WarmupCosineAnnealingLR, WarmupMultiStepLR, warmup
 
@@ -404,6 +405,15 @@ if __name__=='__main__':
 
     
     print(f'Total params: {sum(p.numel() for p in model.parameters())}')
+    
+    # Compute and log FLOPs
+    if args.model == 'ctm':
+        input_shape = (3, 224, 224) if args.dataset == 'imagenet' else (3, 32, 32)
+        flops = compute_ctm_flops(model, input_shape, batch_size=1)
+        total_flops = flops['total']
+        print(f'Total FLOPs: {total_flops:,}')
+        wandb.log({'Total FLOPs': total_flops, 'FLOPs Breakdown': flops})
+    
     decay_params = []
     no_decay_params = []
     no_decay_names = []
