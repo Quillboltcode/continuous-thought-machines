@@ -495,6 +495,7 @@ def get_dataset(
                 [
                     transforms.Resize((100, 100)),
                     transforms.RandomHorizontalFlip(),
+                    transforms.Grayscale(num_output_channels=1),
                     transforms.ToTensor(),
                     normalize,
                 ]
@@ -502,6 +503,7 @@ def get_dataset(
             test_transform = transforms.Compose(
                 [
                     transforms.Resize((100, 100)),
+                    transforms.Grayscale(num_output_channels=1),
                     transforms.ToTensor(),
                     normalize,
                 ]
