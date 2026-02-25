@@ -70,6 +70,7 @@ def parse_args():
     parser.add_argument('--backbone_type', type=str, default='resnet18-4', help='Type of backbone featureiser.')
     parser.add_argument('--pretrained_backbone', type=str, default='none', help='Use a pretrained backbone one of none, imagenet, ms-celeba',
                         choices=['none', 'imagenet', 'ms-celeba'])
+    parser.add_argument('--grayscale', action=argparse.BooleanOptionalAction, default=False, help='Use grayscale images.')
     # CTM / LSTM specific
     parser.add_argument('--d_input', type=int, default=128, help='Dimension of the input (CTM, LSTM).')
     parser.add_argument('--heads', type=int, default=4, help='Number of attention heads (CTM, LSTM).')
@@ -134,41 +135,76 @@ def parse_args():
     return args
 
 
-def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False):
-    if dataset=='imagenet':
+def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False, grayscale=False):
+    if grayscale:
+        dataset_mean = [0.5]
+        dataset_std = [0.5]
+    elif dataset=='imagenet':
         dataset_mean = [0.485, 0.456, 0.406]
         dataset_std = [0.229, 0.224, 0.225]
 
         normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
-        train_transform = transforms.Compose([
-            transforms.RandomResizedCrop(224),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    normalize])
-        test_transform = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-                    transforms.ToTensor(),
-                    normalize])
+        if grayscale:
+            train_transform = transforms.Compose([
+                transforms.RandomResizedCrop(224),
+                transforms.RandomHorizontalFlip(),
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                normalize])
+            test_transform = transforms.Compose([
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                normalize])
+        else:
+            train_transform = transforms.Compose([
+                transforms.RandomResizedCrop(224),
+                        transforms.RandomHorizontalFlip(),
+                        transforms.ToTensor(),
+                        normalize])
+            test_transform = transforms.Compose([
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                        transforms.ToTensor(),
+                        normalize])
 
         class_labels = list(IMAGENET2012_CLASSES.values())
 
         train_data = ImageNet(which_split='train', transform=train_transform)
         test_data = ImageNet(which_split='validation', transform=test_transform)
     elif dataset=='cifar10':
-        dataset_mean = [0.49139968, 0.48215827, 0.44653124]
-        dataset_std = [0.24703233, 0.24348505, 0.26158768]
+        if grayscale:
+            dataset_mean = [0.5]
+            dataset_std = [0.5]
+        else:
+            dataset_mean = [0.49139968, 0.48215827, 0.44653124]
+            dataset_std = [0.24703233, 0.24348505, 0.26158768]
         normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
-        train_transform = transforms.Compose(
-            [transforms.AutoAugment(transforms.AutoAugmentPolicy.CIFAR10),
-            transforms.ToTensor(),
-            normalize,
-            ])
+        if grayscale:
+            train_transform = transforms.Compose(
+                [transforms.AutoAugment(transforms.AutoAugmentPolicy.CIFAR10),
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                normalize,
+                ])
 
-        test_transform = transforms.Compose(
-            [transforms.ToTensor(),
-            normalize,
-            ])
+            test_transform = transforms.Compose(
+                [transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                normalize,
+                ])
+        else:
+            train_transform = transforms.Compose(
+                [transforms.AutoAugment(transforms.AutoAugmentPolicy.CIFAR10),
+                transforms.ToTensor(),
+                normalize,
+                ])
+
+            test_transform = transforms.Compose(
+                [transforms.ToTensor(),
+                normalize,
+                ])
         full_train_data = datasets.CIFAR10(root, train=True, transform=train_transform, download=True)
         test_data = datasets.CIFAR10(root, train=False, transform=test_transform, download=True)
         class_labels = ['air', 'auto', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
@@ -192,39 +228,76 @@ def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False):
             val_data = None
             test_data = test_data
     elif dataset=='cifar100':
-        dataset_mean = [0.5070751592371341, 0.48654887331495067, 0.4409178433670344]
-        dataset_std = [0.2673342858792403, 0.2564384629170882, 0.27615047132568393]
+        if grayscale:
+            dataset_mean = [0.5]
+            dataset_std = [0.5]
+        else:
+            dataset_mean = [0.5070751592371341, 0.48654887331495067, 0.4409178433670344]
+            dataset_std = [0.2673342858792403, 0.2564384629170882, 0.27615047132568393]
         normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
 
-        train_transform = transforms.Compose(
-            [transforms.AutoAugment(transforms.AutoAugmentPolicy.CIFAR10),
-            transforms.ToTensor(),
-            normalize,
-            ])
-        test_transform = transforms.Compose(
-            [transforms.ToTensor(),
-            normalize,
-            ])
+        if grayscale:
+            train_transform = transforms.Compose(
+                [transforms.AutoAugment(transforms.AutoAugmentPolicy.CIFAR10),
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                normalize,
+                ])
+            test_transform = transforms.Compose(
+                [transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                normalize,
+                ])
+        else:
+            train_transform = transforms.Compose(
+                [transforms.AutoAugment(transforms.AutoAugmentPolicy.CIFAR10),
+                transforms.ToTensor(),
+                normalize,
+                ])
+            test_transform = transforms.Compose(
+                [transforms.ToTensor(),
+                normalize,
+                ])
         train_data = datasets.CIFAR100(root, train=True, transform=train_transform, download=True)
         test_data = datasets.CIFAR100(root, train=False, transform=test_transform, download=True)
         idx_order = np.argsort(np.array(list(train_data.class_to_idx.values())))
         class_labels = list(np.array(list(train_data.class_to_idx.keys()))[idx_order])
     elif dataset in ['RAFDB', 'FerPlusPlus']:
         # Using same normalization as ImageNet for RAF-DB
-        dataset_mean = [0.485, 0.456, 0.406]
-        dataset_std = [0.229, 0.224, 0.225]
+        if grayscale:
+            dataset_mean = [0.5]
+            dataset_std = [0.5]
+        else:
+            dataset_mean = [0.485, 0.456, 0.406]
+            dataset_std = [0.229, 0.224, 0.225]
         normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
         # Version 2: Add augmentations RandomHorizontalFlip, Resize to 100x100 fall back to version 2 nb
-        train_transform = transforms.Compose(
-            [transforms.Resize((100, 100)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-            ])
-        test_transform = transforms.Compose(
-            [transforms.ToTensor(),
-            normalize,
-            ])
+        if grayscale:
+            train_transform = transforms.Compose(
+                [transforms.Resize((100, 100)),
+                transforms.RandomHorizontalFlip(),
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                normalize,
+                ])
+            test_transform = transforms.Compose(
+                [transforms.Resize((100, 100)),
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                normalize,
+                ])
+        else:
+            train_transform = transforms.Compose(
+                [transforms.Resize((100, 100)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                normalize,
+                ])
+            test_transform = transforms.Compose(
+                [transforms.Resize((100, 100)),
+                transforms.ToTensor(),
+                normalize,
+                ])
         train_data = datasets.ImageFolder(os.path.join(root, 'train'), transform=train_transform)
         val_data = datasets.ImageFolder(os.path.join(root, 'val'), transform=test_transform)
         test_data = datasets.ImageFolder(os.path.join(root, 'test'), transform=test_transform)
@@ -281,7 +354,7 @@ if __name__=='__main__':
     assert args.dataset in ['cifar10', 'cifar100', 'imagenet', 'RAFDB', 'FerPlusPlus'], f'Need to be one of cifar10, cifar100, imagenet, RAFDB, FerPlusPlus, got {args.dataset}'
 
     # Data
-    train_data, val_data, test_data, class_labels, dataset_mean, dataset_std = get_dataset(args.dataset, args.data_root, args.val_split_ratio, args.use_test_as_val)
+    train_data, val_data, test_data, class_labels, dataset_mean, dataset_std = get_dataset(args.dataset, args.data_root, args.val_split_ratio, args.use_test_as_val, args.grayscale)
     
     num_workers_test = 1 # Defaulting to 1, change if needed
     trainloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers_train)
@@ -343,6 +416,7 @@ if __name__=='__main__':
             dropout_nlm=args.dropout_nlm,
             neuron_select_type=args.neuron_select_type,
             n_random_pairing_self=args.n_random_pairing_self,
+            grayscale=args.grayscale,
         ).to(device)
     elif args.model == 'lstm':
          model = LSTMBaseline(
@@ -379,7 +453,8 @@ if __name__=='__main__':
     
     # Compute and log FLOPs
     if args.model == 'ctm':
-        input_shape = (3, 224, 224) if args.dataset == 'imagenet' else (3, 32, 32)
+        input_channels = 1 if args.grayscale else 3
+        input_shape = (input_channels, 224, 224) if args.dataset == 'imagenet' else (input_channels, 32, 32)
         flops = compute_ctm_flops(model, input_shape, batch_size=1)
         total_flops = flops['total']
         print(f'Total FLOPs: {total_flops:,}')
