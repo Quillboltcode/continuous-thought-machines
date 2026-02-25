@@ -356,30 +356,43 @@ def _resnet(
                 **kwargs,
             )
 
-            # Adapt conv1.weight from torchvision model (kernel_size=7) to our custom model (kernel_size=3)
+            # Check if grayscale mode is enabled (uses kernel_size=1 instead of 3)
+            grayscale = kwargs.get('grayscale', False)
+
+            # Adapt conv1.weight from torchvision model (kernel_size=7) to our custom model
             tv_conv1_weights = pretrained_state_dict[
                 "conv1.weight"
             ]  # Expected shape: [64, 3, 7, 7]
 
-            # Crop the 7x7 kernel to 3x3 (take the center)
-            # (7 - 3) // 2 = 2, so crop from index 2 to 2+3=5
-            cropped_conv1_weights = tv_conv1_weights[
-                :, :, 2:5, 2:5
-            ]  # Resulting shape: [64, 3, 3, 3]
-
-            # Handle different input channels if the custom model expects something other than 3
-            if in_channels == 3:
-                adapted_conv1_weights = cropped_conv1_weights
-            else:
-                # Average across the 3 input channels of the cropped weights
-                # This creates a single-channel kernel that represents the average of the 3 channels
-                avg_3ch_conv1_weights = cropped_conv1_weights.mean(
+            if grayscale:
+                # For grayscale with kernel_size=1, just average all 3 input channels to 1 channel
+                adapted_conv1_weights = tv_conv1_weights.mean(
                     dim=1, keepdim=True
-                )  # Shape: [64, 1, 3, 3]
-                # Repeat this single-channel kernel for the desired number of input channels
-                adapted_conv1_weights = avg_3ch_conv1_weights.repeat(
-                    1, in_channels, 1, 1
-                )  # Shape: [64, in_channels, 3, 3]
+                )  # Shape: [64, 1, 7, 7]
+                # Then crop to 1x1 (center pixel)
+                adapted_conv1_weights = adapted_conv1_weights[
+                    :, :, 3:4, 3:4
+                ]  # Shape: [64, 1, 1, 1]
+            else:
+                # Crop the 7x7 kernel to 3x3 (take the center)
+                # (7 - 3) // 2 = 2, so crop from index 2 to 2+3=5
+                cropped_conv1_weights = tv_conv1_weights[
+                    :, :, 2:5, 2:5
+                ]  # Resulting shape: [64, 3, 3, 3]
+
+                # Handle different input channels if the custom model expects something other than 3
+                if in_channels == 3:
+                    adapted_conv1_weights = cropped_conv1_weights
+                else:
+                    # Average across the 3 input channels of the cropped weights
+                    # This creates a single-channel kernel that represents the average of the 3 channels
+                    avg_3ch_conv1_weights = cropped_conv1_weights.mean(
+                        dim=1, keepdim=True
+                    )  # Shape: [64, 1, 3, 3]
+                    # Repeat this single-channel kernel for the desired number of input channels
+                    adapted_conv1_weights = avg_3ch_conv1_weights.repeat(
+                        1, in_channels, 1, 1
+                    )  # Shape: [64, in_channels, 3, 3]
 
             # Update the state dict with the adapted conv1 weights
             pretrained_state_dict["conv1.weight"] = adapted_conv1_weights
