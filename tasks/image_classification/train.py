@@ -649,6 +649,9 @@ if __name__ == "__main__":
         )
     )
 
+    first_sample, first_label = train_data[0]
+    print(f"[DEBUG] First sample shape: {first_sample.shape}, mean: {first_sample.mean().item():.4f}, label: {first_label}")
+
     num_workers_test = 1  # Defaulting to 1, change if needed
     trainloader = torch.utils.data.DataLoader(
         train_data,
