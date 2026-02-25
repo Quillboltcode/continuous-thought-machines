@@ -55,6 +55,8 @@ def parse_args():
     parser.add_argument("--device", type=int, nargs="+", default=[0], help="List of GPU(s) to use. Set to -1 to use CPU.")
     parser.add_argument("--use_amp", action="store_true", default=False, help="AMP autocast.")
     parser.add_argument("--val_split_ratio", type=float, default=0.1, help="Ratio of training data to use for validation (0.0-1.0).")
+    parser.add_argument("--use_test_as_val", action="store_true", default=False, help="Use test set as validation.")
+    parser.add_argument("--final_test_eval", action="store_true", default=False, help="Run final evaluation on test set after training.")
 
     args = parser.parse_args()
     return args
@@ -87,7 +89,7 @@ class FinetuneModel(nn.Module):
         return self.backbone(x)
 
 
-def get_dataset(dataset, root, val_split_ratio=0.0, grayscale=False):
+def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False, grayscale=False):
     if dataset == "FerPlusPlus":
         if grayscale:
             dataset_mean = [0.5]
@@ -129,7 +131,10 @@ def get_dataset(dataset, root, val_split_ratio=0.0, grayscale=False):
         test_data = datasets.ImageFolder(os.path.join(root, "test"), transform=test_transform)
         class_labels = ["Surprise", "Fear", "Disgust", "Happiness", "Sadness", "Anger", "Neutral"]
 
-        if val_split_ratio > 0.0:
+        if use_test_as_val:
+            val_data = test_data
+            test_data = None
+        elif val_split_ratio > 0.0:
             train_size = int((1.0 - val_split_ratio) * len(train_data))
             val_size = len(train_data) - train_size
             train_data, _ = random_split(
@@ -158,7 +163,7 @@ if __name__ == "__main__":
     )
 
     train_data, val_data, test_data, class_labels = get_dataset(
-        args.dataset, args.data_root, args.val_split_ratio, args.grayscale
+        args.dataset, args.data_root, args.val_split_ratio, args.use_test_as_val, args.grayscale
     )
 
     first_sample, first_label = train_data[0]
@@ -278,34 +283,34 @@ if __name__ == "__main__":
                     train_acc /= train_count
                     train_loss /= train_count
 
-                    test_acc = 0
-                    test_loss = 0
-                    test_count = 0
-                    if testloader is not None:
-                        for i, (inputs, targets) in enumerate(testloader):
+                    val_acc = 0
+                    val_loss = 0
+                    val_count = 0
+                    if valloader is not None:
+                        for i, (inputs, targets) in enumerate(valloader):
                             inputs, targets = inputs.to(device), targets.to(device)
                             with torch.autocast(device_type="cuda" if "cuda" in device else "cpu", dtype=torch.float16, enabled=args.use_amp):
                                 outputs = model(inputs)
                                 loss = nn.CrossEntropyLoss()(outputs, targets)
-                            test_acc += (outputs.argmax(1) == targets).float().sum().item()
-                            test_loss += loss.item() * inputs.size(0)
-                            test_count += inputs.size(0)
+                            val_acc += (outputs.argmax(1) == targets).float().sum().item()
+                            val_loss += loss.item() * inputs.size(0)
+                            val_count += inputs.size(0)
                             if args.n_test_batches != -1 and i >= args.n_test_batches - 1:
                                 break
-                        test_acc /= test_count
-                        test_loss /= test_count
+                        val_acc /= val_count
+                        val_loss /= val_count
 
                 train_losses.append(train_loss)
                 train_accuracies.append(train_acc)
-                if testloader is not None:
-                    test_losses.append(test_loss)
-                    test_accuracies.append(test_acc)
+                if valloader is not None:
+                    test_losses.append(val_loss)
+                    test_accuracies.append(val_acc)
 
                 wandb.log({
                     "Train Loss": train_loss,
                     "Train Accuracy": train_acc,
-                    "Test Loss": test_loss if testloader else 0,
-                    "Test Accuracy": test_acc if testloader else 0,
+                    "Val Loss": val_loss if valloader else 0,
+                    "Val Accuracy": val_acc if valloader else 0,
                     "Learning Rate": current_lr,
                 }, step=bi)
 
@@ -326,3 +331,28 @@ if __name__ == "__main__":
                 torch.save(checkpoint, f"{args.log_dir}/checkpoint.pt")
 
     print("Training complete!")
+
+    if args.final_test_eval and testloader is not None:
+        print("Running final evaluation on test set...")
+        model.eval()
+        final_test_acc = 0
+        final_test_loss = 0
+        final_test_count = 0
+        with torch.inference_mode():
+            for i, (inputs, targets) in enumerate(testloader):
+                inputs, targets = inputs.to(device), targets.to(device)
+                with torch.autocast(device_type="cuda" if "cuda" in device else "cpu", dtype=torch.float16, enabled=args.use_amp):
+                    outputs = model(inputs)
+                    loss = nn.CrossEntropyLoss()(outputs, targets)
+                final_test_acc += (outputs.argmax(1) == targets).float().sum().item()
+                final_test_loss += loss.item() * inputs.size(0)
+                final_test_count += inputs.size(0)
+                if args.n_test_batches != -1 and i >= args.n_test_batches - 1:
+                    break
+        final_test_acc /= final_test_count
+        final_test_loss /= final_test_count
+        print(f"Final Test Accuracy: {final_test_acc:.4f}, Test Loss: {final_test_loss:.4f}")
+        wandb.log({
+            "Final Test Accuracy": final_test_acc,
+            "Final Test Loss": final_test_loss,
+        }, step=args.training_iterations)
