@@ -150,7 +150,7 @@ if __name__ == "__main__":
         os.makedirs(args.log_dir)
 
     wandb.init(
-        project="finetune-grayscale",
+        project="continuous-thought-machines-fer",
         dir=args.log_dir,
         config=vars(args),
         name=f"finetune_{args.backbone}_grayscale={args.grayscale}",
