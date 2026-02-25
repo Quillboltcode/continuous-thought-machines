@@ -258,7 +258,10 @@ class ContinuousThoughtMachine(nn.Module):
         doesn't hurt the model in any way that we can tell.
         """
         if 'resnet' in self.backbone_type:
-            self.initial_rgb = nn.LazyConv2d(3, 1, 1) # Adapts input channels lazily
+            if self.grayscale:
+                self.initial_rgb = nn.Identity()
+            else:
+                self.initial_rgb = nn.LazyConv2d(3, 1, 1) # Adapts input channels lazily
         else:
             self.initial_rgb = nn.Identity()
 
