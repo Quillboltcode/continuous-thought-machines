@@ -98,9 +98,10 @@ class ContinuousThoughtMachine(nn.Module):
                  prediction_reshaper=[-1],
                  dropout=0,
                  dropout_nlm=None,
-                 neuron_select_type='random-pairing',  
-                 n_random_pairing_self=0,
-                 ):
+                  neuron_select_type='random-pairing',  
+                  n_random_pairing_self=0,
+                  grayscale=False,
+                  ):
         super(ContinuousThoughtMachine, self).__init__()
 
         # --- Core Parameters ---
@@ -118,6 +119,7 @@ class ContinuousThoughtMachine(nn.Module):
         self.positional_embedding_type = positional_embedding_type
         self.neuron_select_type = neuron_select_type
         self.memory_length = memory_length
+        self.grayscale = grayscale
         dropout_nlm = dropout if dropout_nlm is None else dropout_nlm
 
         # --- Assertions ---
@@ -300,7 +302,7 @@ class ContinuousThoughtMachine(nn.Module):
             d_backbone = self.get_d_backbone()
             self.backbone = ParityBackbone(n_embeddings=2, d_embedding=d_backbone)
         elif 'resnet' in self.backbone_type:
-            self.backbone = prepare_resnet_backbone(self.backbone_type, pretrained=self.pretrained_backbone)
+            self.backbone = prepare_resnet_backbone(self.backbone_type, pretrained=self.pretrained_backbone, grayscale=self.grayscale)
         elif self.backbone_type == 'none':
             self.backbone = nn.Identity()
         else:
