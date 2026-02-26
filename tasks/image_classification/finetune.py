@@ -129,7 +129,7 @@ def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False, grays
         train_data = datasets.ImageFolder(os.path.join(root, "train"), transform=train_transform)
         val_data = datasets.ImageFolder(os.path.join(root, "val"), transform=test_transform)
         test_data = datasets.ImageFolder(os.path.join(root, "test"), transform=test_transform)
-        class_labels = ["Surprise", "Fear", "Disgust", "Happiness", "Sadness", "Anger", "Neutral"]
+        class_labels = ["Anger", "Disgust", "Fear", "Happiness", "Neutral", "Sadness", "Surprise"]
 
         if use_test_as_val:
             val_data = test_data
@@ -210,6 +210,8 @@ if __name__ == "__main__":
     train_accuracies = []
     test_accuracies = []
     iters = []
+    best_val_acc = 0.0
+    best_checkpoint_path = f"{args.log_dir}/best_checkpoint.pt"
 
     start_iter = 0
     if args.reload:
@@ -226,6 +228,7 @@ if __name__ == "__main__":
             train_accuracies = checkpoint["train_accuracies"]
             test_accuracies = checkpoint["test_accuracies"]
             iters = checkpoint["iters"]
+            best_val_acc = checkpoint.get("best_val_acc", 0.0)
 
     iterator = iter(trainloader)
 
@@ -314,6 +317,23 @@ if __name__ == "__main__":
                     "Learning Rate": current_lr,
                 }, step=bi)
 
+                if valloader is not None and val_acc > best_val_acc:
+                    best_val_acc = val_acc
+                    best_checkpoint = {
+                        "iteration": bi + 1,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "train_losses": train_losses,
+                        "test_losses": test_losses,
+                        "train_accuracies": train_accuracies,
+                        "test_accuracies": test_accuracies,
+                        "iters": iters,
+                        "best_val_acc": best_val_acc,
+                    }
+                    torch.save(best_checkpoint, best_checkpoint_path)
+                    print(f"Saved best checkpoint with val_acc={best_val_acc:.4f} at iteration {bi + 1}")
+
                 model.train()
 
             if bi % args.save_every == 0 and bi > 0:
@@ -327,12 +347,19 @@ if __name__ == "__main__":
                     "train_accuracies": train_accuracies,
                     "test_accuracies": test_accuracies,
                     "iters": iters,
+                    "best_val_acc": best_val_acc,
                 }
                 torch.save(checkpoint, f"{args.log_dir}/checkpoint.pt")
 
     print("Training complete!")
 
     if args.final_test_eval and testloader is not None:
+        if os.path.isfile(best_checkpoint_path):
+            print(f"Loading best checkpoint from: {best_checkpoint_path}")
+            checkpoint = torch.load(best_checkpoint_path, map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            print(f"Loaded best model with val_acc={checkpoint.get('best_val_acc', 'N/A'):.4f}")
+        
         print("Running final evaluation on test set...")
         model.eval()
         final_test_acc = 0

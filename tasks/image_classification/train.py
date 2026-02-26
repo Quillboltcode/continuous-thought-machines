@@ -534,14 +534,15 @@ def get_dataset(
         test_data = datasets.ImageFolder(
             os.path.join(root, "test"), transform=test_transform
         )
+        # ImageFolder assigns class indices alphabetically based on folder names
         class_labels = [
-            "Surprise",
-            "Fear",
-            "Disgust",
-            "Happiness",
-            "Sadness",
             "Anger",
+            "Disgust",
+            "Fear",
+            "Happiness",
             "Neutral",
+            "Sadness",
+            "Surprise",
         ]
 
         if use_test_as_val:
@@ -845,6 +846,10 @@ if __name__ == "__main__":
     train_accuracies_most_certain = [] if args.model in ["ctm", "lstm"] else None
     test_accuracies_most_certain = [] if args.model in ["ctm", "lstm"] else None
 
+    # Best model tracking
+    best_val_acc = 0.0
+    best_checkpoint_path = f"{args.log_dir}/best_model.pt"
+
     scaler = torch.amp.GradScaler(
         "cuda" if "cuda" in device else "cpu", enabled=args.use_amp
     )
@@ -878,6 +883,8 @@ if __name__ == "__main__":
                 train_accuracies = checkpoint["train_accuracies"]
                 test_accuracies = checkpoint["test_accuracies"]
                 iters = checkpoint["iters"]
+                if "best_val_acc" in checkpoint:
+                    best_val_acc = checkpoint["best_val_acc"]
 
                 # Load conditional metrics if they exist in checkpoint and are expected for current model
                 if args.model in ["ctm", "lstm"]:
@@ -1403,6 +1410,34 @@ if __name__ == "__main__":
 
                     wandb.log(log_dict, step=bi)
 
+                # Save best model checkpoint based on validation (test) accuracy
+                if args.save_best_model and valloader is not None:
+                    if args.model in ["ctm", "lstm"]:
+                        current_val_acc = current_test_accuracies_most_certain
+                    else:
+                        current_val_acc = current_test_accuracies
+                    
+                    if current_val_acc > best_val_acc:
+                        best_val_acc = current_val_acc
+                        best_checkpoint = {
+                            "model_state_dict": model.state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "scheduler_state_dict": scheduler.state_dict(),
+                            "scaler_state_dict": scaler.state_dict(),
+                            "iteration": bi,
+                            "train_losses": train_losses,
+                            "test_losses": test_losses,
+                            "train_accuracies": train_accuracies,
+                            "test_accuracies": test_accuracies,
+                            "iters": iters,
+                            "best_val_acc": best_val_acc,
+                        }
+                        if args.model in ["ctm", "lstm"]:
+                            best_checkpoint["train_accuracies_most_certain"] = train_accuracies_most_certain
+                            best_checkpoint["test_accuracies_most_certain"] = test_accuracies_most_certain
+                        torch.save(best_checkpoint, best_checkpoint_path)
+                        print(f"Saved best checkpoint with val_acc={best_val_acc:.4f} at iteration {bi}")
+
                 # Plotting (conditional)
                 figacc = plt.figure(figsize=(10, 10))
                 axacc_train = figacc.add_subplot(211)
@@ -1584,6 +1619,7 @@ if __name__ == "__main__":
                     "train_accuracies": train_accuracies,  # This is list of scalars for FF, list of arrays for CTM/LSTM
                     "test_accuracies": test_accuracies,  # This is list of scalars for FF, list of arrays for CTM/LSTM
                     "iters": iters,
+                    "best_val_acc": best_val_acc,
                     "args": args,  # Save args used for this run
                     # RNG states
                     "torch_rng_state": torch.get_rng_state(),
@@ -1602,3 +1638,55 @@ if __name__ == "__main__":
                 torch.save(checkpoint_data, f"{args.log_dir}/checkpoint.pt")
 
             pbar.update(1)
+
+    print("Training complete!")
+
+    if args.final_test_eval and testloader is not None and args.save_best_model:
+        if os.path.isfile(best_checkpoint_path):
+            print(f"Loading best checkpoint from: {best_checkpoint_path}")
+            checkpoint = torch.load(best_checkpoint_path, map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            print(f"Loaded best model with val_acc={checkpoint.get('best_val_acc', 'N/A'):.4f}")
+        
+        print("Running final evaluation on test set...")
+        model.eval()
+        final_test_acc = 0
+        final_test_loss = 0
+        final_test_count = 0
+        with torch.inference_mode():
+            for i, (inputs, targets) in enumerate(testloader):
+                inputs, targets = inputs.to(device), targets.to(device)
+                with torch.autocast(device_type="cuda" if "cuda" in device else "cpu", dtype=torch.float16, enabled=args.use_amp):
+                    if args.model in ["ctm", "lstm"]:
+                        predictions, certainties, _ = model(inputs)
+                        _, where_most_certain = image_classification_loss(
+                            predictions, certainties, targets, use_most_certain=True
+                        )
+                        outputs = predictions
+                    else:
+                        outputs = model(inputs)
+                    loss = nn.CrossEntropyLoss()(outputs, targets)
+                
+                if args.model in ["ctm", "lstm"]:
+                    final_test_acc += (
+                        outputs.argmax(1)[
+                            torch.arange(outputs.size(0), device=outputs.device),
+                            where_most_certain,
+                        ]
+                        == targets
+                    ).float().sum().item()
+                else:
+                    final_test_acc += (outputs.argmax(1) == targets).float().sum().item()
+                
+                final_test_loss += loss.item() * inputs.size(0)
+                final_test_count += inputs.size(0)
+                if args.n_test_batches != -1 and i >= args.n_test_batches - 1:
+                    break
+        
+        final_test_acc /= final_test_count
+        final_test_loss /= final_test_count
+        print(f"Final Test Accuracy: {final_test_acc:.4f}, Test Loss: {final_test_loss:.4f}")
+        wandb.log({
+            "Final Test Accuracy": final_test_acc,
+            "Final Test Loss": final_test_loss,
+        }, step=args.training_iterations)
