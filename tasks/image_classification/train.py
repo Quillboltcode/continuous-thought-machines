@@ -1659,22 +1659,20 @@ if __name__ == "__main__":
                 with torch.autocast(device_type="cuda" if "cuda" in device else "cpu", dtype=torch.float16, enabled=args.use_amp):
                     if args.model in ["ctm", "lstm"]:
                         predictions, certainties, _ = model(inputs)
-                        _, where_most_certain = image_classification_loss(
+                        loss, where_most_certain = image_classification_loss(
                             predictions, certainties, targets, use_most_certain=True
                         )
-                        outputs = predictions
+                        outputs = predictions[
+                            torch.arange(predictions.size(0), device=predictions.device),
+                            :,
+                            where_most_certain
+                        ]
                     else:
                         outputs = model(inputs)
-                    loss = nn.CrossEntropyLoss()(outputs, targets)
+                        loss = nn.CrossEntropyLoss()(outputs, targets)
                 
                 if args.model in ["ctm", "lstm"]:
-                    final_test_acc += (
-                        outputs.argmax(1)[
-                            torch.arange(outputs.size(0), device=outputs.device),
-                            where_most_certain,
-                        ]
-                        == targets
-                    ).float().sum().item()
+                    final_test_acc += (outputs.argmax(1) == targets).float().sum().item()
                 else:
                     final_test_acc += (outputs.argmax(1) == targets).float().sum().item()
                 

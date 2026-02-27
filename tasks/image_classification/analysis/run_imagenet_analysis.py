@@ -105,6 +105,8 @@ if __name__=='__main__':
 
     # Instantiate Model based on checkpoint args
     print("Instantiating CTM model...")
+    # Handle grayscale - default to False for legacy checkpoints
+    use_grayscale = getattr(model_args, 'grayscale', False)
     model = ContinuousThoughtMachine(
         iterations=model_args.iterations,
         d_model=model_args.d_model,
@@ -124,6 +126,7 @@ if __name__=='__main__':
         dropout=0, # No dropout for eval
         neuron_select_type=model_args.neuron_select_type,
         n_random_pairing_self=model_args.n_random_pairing_self,
+        grayscale=use_grayscale,
     ).to(device)
 
     # Load weights into model
@@ -165,22 +168,43 @@ if __name__=='__main__':
             ]))
         elif args.dataset in ['rafdb', 'ferplusplus']:
             print(f"Using {args.dataset} from ImageFolder")
-            dataset_mean = [0.485, 0.456, 0.406]
-            dataset_std = [0.229, 0.224, 0.225]
-            img_size = 256
-            transform = transforms.Compose([
-                transforms.Resize(img_size),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=dataset_mean, std=dataset_std)
-            ])
+            # FerPlusPlus is grayscale, RAFDB is RGB
+            is_grayscale = (args.dataset == 'ferplusplus')
+            if is_grayscale:
+                dataset_mean = [0.5]
+                dataset_std = [0.5]
+                img_size = 256
+                transform = transforms.Compose([
+                    transforms.Resize(img_size),
+                    transforms.Grayscale(num_output_channels=1),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=dataset_mean, std=dataset_std)
+                ])
+                transform_crop = transforms.Compose([
+                    transforms.Resize(img_size),
+                    transforms.Grayscale(num_output_channels=1),
+                    transforms.RandomCrop(img_size),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=dataset_mean, std=dataset_std)
+                ])
+            else:
+                dataset_mean = [0.485, 0.456, 0.406]
+                dataset_std = [0.229, 0.224, 0.225]
+                img_size = 256
+                transform = transforms.Compose([
+                    transforms.Resize(img_size),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=dataset_mean, std=dataset_std)
+                ])
+                transform_crop = transforms.Compose([
+                    transforms.Resize(img_size),
+                    transforms.RandomCrop(img_size),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=dataset_mean, std=dataset_std)
+                ])
             data_path = os.path.join(args.data_root, args.dataset)
             validation_dataset = datasets.ImageFolder(root=data_path, transform=transform)
-            validation_dataset_centercrop = datasets.ImageFolder(root=data_path, transform=transforms.Compose([
-                transforms.Resize(img_size),
-                transforms.RandomCrop(img_size),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=dataset_mean, std=dataset_std)
-            ]))
+            validation_dataset_centercrop = datasets.ImageFolder(root=data_path, transform=transform_crop)
         else:
             raise ValueError(f"Unknown dataset: {args.dataset}")
     
@@ -188,6 +212,9 @@ if __name__=='__main__':
         class_labels = list(IMAGENET2012_CLASSES.values())
     else:
         class_labels = validation_dataset.classes
+    
+    # Number of channels for the dataset
+    num_channels = 1 if (args.dataset == 'ferplusplus') else 3
 
     os.makedirs(f'{args.output_dir}', exist_ok=True)
 
@@ -484,11 +511,14 @@ if __name__=='__main__':
                 # --- Prepare Image for Display ---
                 # Denormalize the input tensor for visualization
                 data_img_tensor = inputs[0].cpu() # Get first item in batch, move to CPU
-                mean_tensor = torch.tensor(dataset_mean).view(3, 1, 1)
-                std_tensor = torch.tensor(dataset_std).view(3, 1, 1)
+                mean_tensor = torch.tensor(dataset_mean).view(num_channels, 1, 1)
+                std_tensor = torch.tensor(dataset_std).view(num_channels, 1, 1)
                 data_img_denorm = data_img_tensor * std_tensor + mean_tensor
                 # Permute to (H, W, C) and convert to numpy, clip to [0, 1]
                 data_img_np = data_img_denorm.permute(1, 2, 0).detach().numpy()
+                # For grayscale, convert to RGB by repeating channels for visualization
+                if num_channels == 1:
+                    data_img_np = np.repeat(data_img_np, 3, axis=2)
                 data_img_np = np.clip(data_img_np, 0, 1)
                 img_h, img_w = data_img_np.shape[:2]
 
@@ -788,11 +818,14 @@ if __name__=='__main__':
                 # --- Prepare Image for Display ---
                 # Denormalize the input tensor for visualization
                 data_img_tensor = inputs[0].cpu() # Get first item in batch, move to CPU
-                mean_tensor = torch.tensor(dataset_mean).view(3, 1, 1)
-                std_tensor = torch.tensor(dataset_std).view(3, 1, 1)
+                mean_tensor = torch.tensor(dataset_mean).view(num_channels, 1, 1)
+                std_tensor = torch.tensor(dataset_std).view(num_channels, 1, 1)
                 data_img_denorm = data_img_tensor * std_tensor + mean_tensor
                 # Permute to (H, W, C) and convert to numpy, clip to [0, 1]
                 data_img_np = data_img_denorm.permute(1, 2, 0).detach().numpy()
+                # For grayscale, convert to RGB by repeating channels for visualization
+                if num_channels == 1:
+                    data_img_np = np.repeat(data_img_np, 3, axis=2)
                 data_img_np = np.clip(data_img_np, 0, 1)
                 img_h, img_w = data_img_np.shape[:2]
 
