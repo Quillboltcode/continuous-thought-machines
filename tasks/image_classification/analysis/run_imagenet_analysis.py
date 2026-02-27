@@ -69,6 +69,8 @@ def parse_args():
     parser.add_argument('--checkpoint', type=str, default='checkpoints/imagenet/ctm_clean.pt', help="Path to ATM checkpoint")
     parser.add_argument('--output_dir', type=str, default='tasks/image_classification/analysis/outputs/imagenet_viz', help="Directory for visualization outputs")
     parser.add_argument('--debug', action=argparse.BooleanOptionalAction, default=True, help='Debug mode: use CIFAR100 instead of ImageNet for debugging.')
+    parser.add_argument('--dataset', type=str, default='imagenet', choices=['imagenet', 'ferplusplus', 'rafdb'], help='Dataset to use for analysis.')
+    parser.add_argument('--data_root', type=str, default='data/', help='Root directory for dataset.')
     parser.add_argument('--plot_every', type=int, default=10, help="How often to plot.")
     
     parser.add_argument('--inference_iterations', type=int, default=50, help="Iterations to use during inference.")
@@ -144,25 +146,48 @@ if __name__=='__main__':
         validation_dataset = datasets.CIFAR100('data/', train=False, transform=transform, download=True)
         validation_dataset_centercrop = datasets.CIFAR100('data/', train=True, transform=transform, download=True)
     else:
-        print("Using ImageNet")
-        # ImageNet specific normalization constants
-        dataset_mean = [0.485, 0.456, 0.406]
-        dataset_std = [0.229, 0.224, 0.225]
-        img_size = 256 # Resize ImageNet images
-        # Note: Original comment mentioned no CenterCrop, this transform reflects that.
-        transform = transforms.Compose([
-            transforms.Resize(img_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=dataset_mean, std=dataset_std) # Normalize
-        ])
-        validation_dataset = ImageNet(which_split='validation', transform=transform)
-        validation_dataset_centercrop = ImageNet(which_split='train', transform=transforms.Compose([
-            transforms.Resize(img_size),
-            transforms.RandomCrop(img_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=dataset_mean, std=dataset_std) # Normalize
-        ]))
-    class_labels = list(IMAGENET2012_CLASSES.values()) # Load actual class names
+        if args.dataset == 'imagenet':
+            print("Using ImageNet")
+            dataset_mean = [0.485, 0.456, 0.406]
+            dataset_std = [0.229, 0.224, 0.225]
+            img_size = 256
+            transform = transforms.Compose([
+                transforms.Resize(img_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=dataset_mean, std=dataset_std)
+            ])
+            validation_dataset = ImageNet(which_split='validation', transform=transform)
+            validation_dataset_centercrop = ImageNet(which_split='train', transform=transforms.Compose([
+                transforms.Resize(img_size),
+                transforms.RandomCrop(img_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=dataset_mean, std=dataset_std)
+            ]))
+        elif args.dataset in ['rafdb', 'ferplusplus']:
+            print(f"Using {args.dataset} from ImageFolder")
+            dataset_mean = [0.485, 0.456, 0.406]
+            dataset_std = [0.229, 0.224, 0.225]
+            img_size = 256
+            transform = transforms.Compose([
+                transforms.Resize(img_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=dataset_mean, std=dataset_std)
+            ])
+            data_path = os.path.join(args.data_root, args.dataset)
+            validation_dataset = datasets.ImageFolder(root=data_path, transform=transform)
+            validation_dataset_centercrop = datasets.ImageFolder(root=data_path, transform=transforms.Compose([
+                transforms.Resize(img_size),
+                transforms.RandomCrop(img_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=dataset_mean, std=dataset_std)
+            ]))
+        else:
+            raise ValueError(f"Unknown dataset: {args.dataset}")
+    
+    if args.dataset == 'imagenet':
+        class_labels = list(IMAGENET2012_CLASSES.values())
+    else:
+        class_labels = validation_dataset.classes
 
     os.makedirs(f'{args.output_dir}', exist_ok=True)
 
