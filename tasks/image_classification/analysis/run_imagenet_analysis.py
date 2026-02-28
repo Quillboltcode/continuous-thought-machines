@@ -646,7 +646,7 @@ if __name__=='__main__':
                 ax_prob = axes['probabilities']
                 # Get probabilities for the current step
                 ps = torch.softmax(predictions[0, :, step_i], -1).detach().cpu()
-                k = 15 # Top k predictions
+                k = min(15, len(class_labels)) # Top k predictions
                 topk_probs, topk_indices = torch.topk(ps, k, dim=0, largest=True)
                 topk_indices = topk_indices.numpy()
                 topk_probs = topk_probs.numpy()
@@ -923,7 +923,7 @@ if __name__=='__main__':
                 ax_prob = axes['probabilities']
                 # Get probabilities for the current step
                 ps = torch.softmax(predictions[0, :, step_i], -1).detach().cpu()
-                k = 15 # Top k predictions
+                k = min(15, len(class_labels)) # Top k predictions
                 topk_probs, topk_indices = torch.topk(ps, k, dim=0, largest=True)
                 topk_indices = topk_indices.numpy()
                 topk_probs = topk_probs.numpy()
