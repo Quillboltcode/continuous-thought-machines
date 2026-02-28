@@ -93,8 +93,34 @@ if __name__=='__main__':
 
     # --- Load Checkpoint & Model ---
     print(f"Loading checkpoint: {args.checkpoint}")
-    checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False) # removed weights_only=False
-    model_args = checkpoint['args']
+    checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
+
+    # Handle checkpoints without args (create args manually)
+    if 'args' not in checkpoint:
+        print("Warning: checkpoint has no 'args'. Creating args from known training config.")
+        class ModelArgs:
+            pass
+        model_args = ModelArgs()
+        model_args.d_model = 512
+        model_args.d_input = 256
+        model_args.synapse_depth = 4
+        model_args.heads = 8
+        model_args.n_synch_out = 256
+        model_args.n_synch_action = 256
+        model_args.n_random_pairing_self = 0
+        model_args.neuron_select_type = 'random'
+        model_args.iterations = 50
+        model_args.memory_length = 5
+        model_args.deep_memory = True
+        model_args.memory_hidden_dims = 16
+        model_args.do_normalisation = False
+        model_args.positional_embedding_type = 'none'
+        model_args.backbone_type = 'resnet18-4'
+        model_args.out_dims = 7  # FerPlusPlus test has 7 classes
+        model_args.grayscale = True
+        model_args.pretrained_backbone = 'imagenet'
+    else:
+        model_args = checkpoint['args']
 
     # Handle legacy arguments from checkpoint if necessary
     if not hasattr(model_args, 'backbone_type') and hasattr(model_args, 'resnet_type'):
@@ -107,6 +133,7 @@ if __name__=='__main__':
     print("Instantiating CTM model...")
     # Handle grayscale - default to False for legacy checkpoints
     use_grayscale = getattr(model_args, 'grayscale', False)
+    pretrained_backbone = getattr(model_args, 'pretrained_backbone', None)
     model = ContinuousThoughtMachine(
         iterations=model_args.iterations,
         d_model=model_args.d_model,
@@ -127,6 +154,7 @@ if __name__=='__main__':
         neuron_select_type=model_args.neuron_select_type,
         n_random_pairing_self=model_args.n_random_pairing_self,
         grayscale=use_grayscale,
+        pretrained_backbone=pretrained_backbone,
     ).to(device)
 
     # Load weights into model
@@ -202,7 +230,7 @@ if __name__=='__main__':
                     transforms.ToTensor(),
                     transforms.Normalize(mean=dataset_mean, std=dataset_std)
                 ])
-            data_path = os.path.join(args.data_root, args.dataset)
+            data_path = args.data_root if args.dataset in ['', None] else os.path.join(args.data_root, args.dataset)
             validation_dataset = datasets.ImageFolder(root=data_path, transform=transform)
             validation_dataset_centercrop = datasets.ImageFolder(root=data_path, transform=transform_crop)
         else:
