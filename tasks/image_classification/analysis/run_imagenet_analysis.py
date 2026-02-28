@@ -230,7 +230,11 @@ if __name__=='__main__':
                     transforms.ToTensor(),
                     transforms.Normalize(mean=dataset_mean, std=dataset_std)
                 ])
-            data_path = args.data_root if args.dataset in ['', None] else os.path.join(args.data_root, args.dataset)
+            # For ferplusplus/rafdb, data_root already points to the folder with class subdirectories
+            if args.dataset == 'ferplusplus':
+                data_path = args.data_root
+            else:
+                data_path = os.path.join(args.data_root, args.dataset)
             validation_dataset = datasets.ImageFolder(root=data_path, transform=transform)
             validation_dataset_centercrop = datasets.ImageFolder(root=data_path, transform=transform_crop)
         else:
