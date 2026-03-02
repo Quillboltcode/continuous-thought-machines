@@ -20,6 +20,7 @@ from torchvision import datasets
 from torchvision import transforms
 from tasks.image_classification.imagenet_classes import IMAGENET2012_CLASSES
 from models.ctm import ContinuousThoughtMachine
+from models.ctm_gated import CTMGated, CTMGatedLoss
 from models.lstm import LSTMBaseline
 from models.ff import FFBaseline
 from tasks.image_classification.plotting import (
@@ -76,7 +77,7 @@ def parse_args():
         "--model",
         type=str,
         default="ctm",
-        choices=["ctm", "lstm", "ff"],
+        choices=["ctm", "ctm_gated", "lstm", "ff"],
         help="Model type to train.",
     )
 
@@ -142,6 +143,33 @@ def parse_args():
         type=float,
         default=0.2,
         help="Lambda for PonderLoss geometric distribution.",
+    )
+    # CTM-Gated specific
+    parser.add_argument(
+        "--exit_strategy",
+        type=str,
+        default="certainty",
+        choices=["certainty", "ponder", "normal", "learned", "none"],
+        help="Exit strategy for CTM-Gated (certainty threshold, ponder, normal, learned, none).",
+    )
+    parser.add_argument(
+        "--exit_threshold",
+        type=float,
+        default=0.9,
+        help="Certainty threshold for early exit (for certainty strategy).",
+    )
+    parser.add_argument(
+        "--min_steps",
+        type=int,
+        default=1,
+        help="Minimum steps before early exit allowed for CTM-Gated.",
+    )
+    parser.add_argument(
+        "--loss_type",
+        type=str,
+        default="standard",
+        choices=["standard", "ponder", "loop"],
+        help="Loss type for CTM-Gated (standard, ponder, loop).",
     )
     parser.add_argument(
         "--synapse_depth",
@@ -535,15 +563,7 @@ def get_dataset(
             os.path.join(root, "test"), transform=test_transform
         )
         # ImageFolder assigns class indices alphabetically based on folder names
-        class_labels = [
-            "Anger",
-            "Disgust",
-            "Fear",
-            "Happiness",
-            "Neutral",
-            "Sadness",
-            "Surprise",
-        ]
+        class_labels = sorted(train_data.classes)
 
         if use_test_as_val:
             val_data = test_data
@@ -734,6 +754,42 @@ if __name__ == "__main__":
             n_random_pairing_self=args.n_random_pairing_self,
             grayscale=args.grayscale,
         ).to(device)
+    elif args.model == "ctm_gated":
+        model = CTMGated(
+            iterations=args.iterations,
+            d_model=args.d_model,
+            d_input=args.d_input,
+            heads=args.heads,
+            n_synch_out=args.n_synch_out,
+            n_synch_action=args.n_synch_action,
+            synapse_depth=args.synapse_depth,
+            memory_length=args.memory_length,
+            deep_nlms=args.deep_memory,
+            memory_hidden_dims=args.memory_hidden_dims,
+            do_layernorm_nlm=args.do_normalisation,
+            backbone_type=args.backbone_type,
+            pretrained_backbone=args.pretrained_backbone,
+            positional_embedding_type=args.positional_embedding_type,
+            out_dims=args.out_dims,
+            prediction_reshaper=prediction_reshaper,
+            dropout=args.dropout,
+            dropout_nlm=args.dropout_nlm,
+            neuron_select_type=args.neuron_select_type,
+            n_random_pairing_self=args.n_random_pairing_self,
+            grayscale=args.grayscale,
+            exit_strategy=args.exit_strategy,
+            exit_threshold=args.exit_threshold,
+            lambda_p=args.lambda_p,
+            beta=0.01,
+            min_steps=args.min_steps,
+        ).to(device)
+        ctm_gated_loss = CTMGatedLoss(
+            loss_type=args.loss_type,
+            lambda_p=args.lambda_p,
+            beta=0.01,
+            use_most_certain=True,
+            max_steps=args.iterations
+        ).to(device)
     elif args.model == "lstm":
         model = LSTMBaseline(
             num_layers=args.num_layers,
@@ -766,7 +822,7 @@ if __name__ == "__main__":
     print(f"Total params: {sum(p.numel() for p in model.parameters())}")
 
     # Compute and log FLOPs
-    if args.model == "ctm":
+    if args.model in ["ctm", "ctm_gated"]:
         input_channels = 1 if args.grayscale else 3
         input_shape = (
             (input_channels, 224, 224)
@@ -842,9 +898,12 @@ if __name__ == "__main__":
     train_accuracies = []
     test_accuracies = []
     iters = []
-    # Conditional metrics for CTM/LSTM
-    train_accuracies_most_certain = [] if args.model in ["ctm", "lstm"] else None
-    test_accuracies_most_certain = [] if args.model in ["ctm", "lstm"] else None
+    # Conditional metrics for CTM/LSTM/CTM-Gated
+    train_accuracies_most_certain = [] if args.model in ["ctm", "lstm", "ctm_gated"] else None
+    test_accuracies_most_certain = [] if args.model in ["ctm", "lstm", "ctm_gated"] else None
+    # CTM-Gated specific: track exit steps
+    train_exit_steps = [] if args.model == "ctm_gated" else None
+    test_exit_steps = [] if args.model == "ctm_gated" else None
 
     # Best model tracking
     best_val_acc = 0.0
@@ -887,13 +946,16 @@ if __name__ == "__main__":
                     best_val_acc = checkpoint["best_val_acc"]
 
                 # Load conditional metrics if they exist in checkpoint and are expected for current model
-                if args.model in ["ctm", "lstm"]:
+                if args.model in ["ctm", "lstm", "ctm_gated"]:
                     train_accuracies_most_certain = checkpoint[
                         "train_accuracies_most_certain"
                     ]
                     test_accuracies_most_certain = checkpoint[
                         "test_accuracies_most_certain"
                     ]
+                if args.model == "ctm_gated" and "train_exit_steps" in checkpoint:
+                    train_exit_steps = checkpoint["train_exit_steps"]
+                    test_exit_steps = checkpoint["test_exit_steps"]
 
             else:
                 print("Only reloading model!")
@@ -917,8 +979,8 @@ if __name__ == "__main__":
                 model.backbone, mode="reduce-overhead", fullgraph=True
             )
 
-        # Compile synapses only for CTM
-        if args.model == "ctm":
+        # Compile synapses only for CTM/CTM-Gated
+        if args.model in ["ctm", "ctm_gated"]:
             model.synapses = torch.compile(
                 model.synapses, mode="reduce-overhead", fullgraph=True
             )
@@ -1001,6 +1063,28 @@ if __name__ == "__main__":
                             .item()
                         )
                         pbar_desc = f"CTM Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Where_certain={where_most_certain.float().mean().item():0.2f}+-{where_most_certain.float().std().item():0.2f} ({where_most_certain.min().item():d}<->{where_most_certain.max().item():d})"
+
+                elif args.model == "ctm_gated":
+                    predictions, certainties, synchronisation, exit_steps = model(inputs)
+                    loss, where_most_certain = ctm_gated_loss(
+                        predictions, certainties, targets, exit_steps
+                    )
+                    accuracy = (
+                        (
+                            predictions.argmax(1)[
+                                torch.arange(
+                                    predictions.size(0), device=predictions.device
+                                ),
+                                where_most_certain,
+                            ]
+                            == targets
+                        )
+                        .float()
+                        .mean()
+                        .item()
+                    )
+                    avg_exit_step = exit_steps.float().mean().item()
+                    pbar_desc = f"CTM-Gated Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Exit_step={avg_exit_step:0.2f}"
 
                 elif args.model == "lstm":
                     predictions, certainties, synchronisation = model(inputs)
@@ -1156,6 +1240,32 @@ if __name__ == "__main__":
                                         .numpy()
                                     )  # Shape (B,)
 
+                            elif args.model == "ctm_gated":
+                                these_predictions, certainties, _, these_exit_steps = model(inputs, use_early_exit=False)
+                                loss, where_most_certain = ctm_gated_loss(
+                                    these_predictions, certainties, targets, these_exit_steps
+                                )
+                                all_predictions_list.append(
+                                    these_predictions.argmax(1)
+                                    .detach()
+                                    .cpu()
+                                    .numpy()
+                                )  # Shape (B, T)
+                                all_predictions_most_certain_list.append(
+                                    these_predictions.argmax(1)[
+                                        torch.arange(
+                                            these_predictions.size(0),
+                                            device=these_predictions.device,
+                                        ),
+                                        where_most_certain,
+                                    ]
+                                    .detach()
+                                    .cpu()
+                                    .numpy()
+                                )
+                                if train_exit_steps is not None:
+                                    train_exit_steps.append(these_exit_steps.float().mean().item())
+
                             elif args.model == "lstm":
                                 these_predictions, certainties, _ = model(inputs)
                                 loss, where_most_certain = image_classification_loss(
@@ -1205,7 +1315,7 @@ if __name__ == "__main__":
                     )  # Shape (N, T) or (N,)
                     train_losses.append(np.mean(all_losses))
 
-                    if args.model in ["ctm", "lstm"]:
+                    if args.model in ["ctm", "lstm", "ctm_gated"]:
                         # Accuracies per tick for CTM/LSTM
                         current_train_accuracies = np.mean(
                             all_predictions == all_targets[..., np.newaxis], axis=0
@@ -1232,12 +1342,14 @@ if __name__ == "__main__":
                         "Learning Rate": current_lr,
                     }
 
-                    if args.model in ["ctm", "lstm"]:
+                    if args.model in ["ctm", "lstm", "ctm_gated"]:
                         log_dict["Train Accuracy (Most Certain)"] = (
                             current_train_accuracies_most_certain
                         )
                         for i, acc in enumerate(current_train_accuracies):
                             log_dict[f"Train Accuracy (Tick {i})"] = acc
+                        if args.model == "ctm_gated" and train_exit_steps:
+                            log_dict["Train Avg Exit Steps"] = np.mean(train_exit_steps)
                     else:  # FF
                         log_dict["Train Accuracy"] = current_train_accuracies
 
@@ -1328,6 +1440,32 @@ if __name__ == "__main__":
                                         .numpy()
                                     )
 
+                            elif args.model == "ctm_gated":
+                                these_predictions, certainties, _, these_exit_steps = model(inputs, use_early_exit=False)
+                                loss, where_most_certain = ctm_gated_loss(
+                                    these_predictions, certainties, targets, these_exit_steps
+                                )
+                                all_predictions_list.append(
+                                    these_predictions.argmax(1)
+                                    .detach()
+                                    .cpu()
+                                    .numpy()
+                                )
+                                all_predictions_most_certain_list.append(
+                                    these_predictions.argmax(1)[
+                                        torch.arange(
+                                            these_predictions.size(0),
+                                            device=these_predictions.device,
+                                        ),
+                                        where_most_certain,
+                                    ]
+                                    .detach()
+                                    .cpu()
+                                    .numpy()
+                                )
+                                if test_exit_steps is not None:
+                                    test_exit_steps.append(these_exit_steps.float().mean().item())
+
                             elif args.model == "lstm":
                                 these_predictions, certainties, _ = model(inputs)
                                 loss, where_most_certain = image_classification_loss(
@@ -1375,7 +1513,7 @@ if __name__ == "__main__":
                     all_predictions = np.concatenate(all_predictions_list)
                     test_losses.append(np.mean(all_losses))
 
-                    if args.model in ["ctm", "lstm"]:
+                    if args.model in ["ctm", "lstm", "ctm_gated"]:
                         current_test_accuracies = np.mean(
                             all_predictions == all_targets[..., np.newaxis], axis=0
                         )
@@ -1399,12 +1537,14 @@ if __name__ == "__main__":
                         "Test Loss": test_losses[-1],
                     }
 
-                    if args.model in ["ctm", "lstm"]:
+                    if args.model in ["ctm", "lstm", "ctm_gated"]:
                         log_dict["Test Accuracy (Most Certain)"] = (
                             current_test_accuracies_most_certain
                         )
                         for i, acc in enumerate(current_test_accuracies):
                             log_dict[f"Test Accuracy (Tick {i})"] = acc
+                        if args.model == "ctm_gated" and test_exit_steps:
+                            log_dict["Test Avg Exit Steps"] = np.mean(test_exit_steps)
                     else:  # FF
                         log_dict["Test Accuracy"] = current_test_accuracies
 
@@ -1412,7 +1552,7 @@ if __name__ == "__main__":
 
                 # Save best model checkpoint based on validation (test) accuracy
                 if args.save_best_model and valloader is not None:
-                    if args.model in ["ctm", "lstm"]:
+                    if args.model in ["ctm", "lstm", "ctm_gated"]:
                         current_val_acc = current_test_accuracies_most_certain
                     else:
                         current_val_acc = current_test_accuracies
@@ -1432,7 +1572,7 @@ if __name__ == "__main__":
                             "iters": iters,
                             "best_val_acc": best_val_acc,
                         }
-                        if args.model in ["ctm", "lstm"]:
+                        if args.model in ["ctm", "lstm", "ctm_gated"]:
                             best_checkpoint["train_accuracies_most_certain"] = train_accuracies_most_certain
                             best_checkpoint["test_accuracies_most_certain"] = test_accuracies_most_certain
                         torch.save(best_checkpoint, best_checkpoint_path)
@@ -1444,7 +1584,7 @@ if __name__ == "__main__":
                 axacc_test = figacc.add_subplot(212)
                 cm = sns.color_palette("viridis", as_cmap=True)
 
-                if args.model in ["ctm", "lstm"]:
+                if args.model in ["ctm", "lstm", "ctm_gated"]:
                     # Plot per-tick accuracy for CTM/LSTM
                     train_acc_arr = np.array(train_accuracies)  # Shape (N_iters, T)
                     test_acc_arr = np.array(test_accuracies)  # Shape (N_iters, T)
@@ -1526,7 +1666,7 @@ if __name__ == "__main__":
                 plt.close(figloss)
 
                 # Conditional Visualization (Only for CTM/LSTM)
-                if args.model in ["ctm", "lstm"]:
+                if args.model in ["ctm", "lstm", "ctm_gated"]:
                     try:  # For safety
                         inputs_viz, targets_viz = next(
                             iter(testloader)
@@ -1626,14 +1766,18 @@ if __name__ == "__main__":
                     "numpy_rng_state": np.random.get_state(),
                     "random_rng_state": random.getstate(),
                 }
-                # Conditionally add metrics specific to CTM/LSTM
-                if args.model in ["ctm", "lstm"]:
+                # Conditionally add metrics specific to CTM/LSTM/CTM-Gated
+                if args.model in ["ctm", "lstm", "ctm_gated"]:
                     checkpoint_data["train_accuracies_most_certain"] = (
                         train_accuracies_most_certain
                     )
                     checkpoint_data["test_accuracies_most_certain"] = (
                         test_accuracies_most_certain
                     )
+                # CTM-Gated specific
+                if args.model == "ctm_gated":
+                    checkpoint_data["train_exit_steps"] = train_exit_steps
+                    checkpoint_data["test_exit_steps"] = test_exit_steps
 
                 torch.save(checkpoint_data, f"{args.log_dir}/checkpoint.pt")
 
@@ -1657,7 +1801,7 @@ if __name__ == "__main__":
             for i, (inputs, targets) in enumerate(testloader):
                 inputs, targets = inputs.to(device), targets.to(device)
                 with torch.autocast(device_type="cuda" if "cuda" in device else "cpu", dtype=torch.float16, enabled=args.use_amp):
-                    if args.model in ["ctm", "lstm"]:
+                    if args.model in ["ctm", "lstm", "ctm_gated"]:
                         predictions, certainties, _ = model(inputs)
                         loss, where_most_certain = image_classification_loss(
                             predictions, certainties, targets, use_most_certain=True
@@ -1671,7 +1815,7 @@ if __name__ == "__main__":
                         outputs = model(inputs)
                         loss = nn.CrossEntropyLoss()(outputs, targets)
                 
-                if args.model in ["ctm", "lstm"]:
+                if args.model in ["ctm", "lstm", "ctm_gated"]:
                     final_test_acc += (outputs.argmax(1) == targets).float().sum().item()
                 else:
                     final_test_acc += (outputs.argmax(1) == targets).float().sum().item()
