@@ -1398,42 +1398,66 @@ if __name__ == "__main__":
                                 targets = targets.to(device)
                                 all_targets_list.append(targets.detach().cpu().numpy())
 
-                            # Model-specific forward and loss for evaluation
-                            if args.model == "ctm":
-                                these_predictions, certainties, _ = model(inputs)
-                                if args.use_ponder_loss:
-                                    loss, p_t = ponder_loss(
-                                        these_predictions,
-                                        certainties.unsqueeze(1),
-                                        targets,
-                                    )
-                                    where_to_eval = p_t.argmax(-1)
-                                    all_predictions_list.append(
-                                        these_predictions.argmax(1)
-                                        .detach()
-                                        .cpu()
-                                        .numpy()
-                                    )
-                                    all_predictions_most_certain_list.append(
-                                        these_predictions.argmax(1)[
-                                            torch.arange(
-                                                these_predictions.size(0),
-                                                device=these_predictions.device,
-                                            ),
-                                            where_to_eval,
-                                        ]
-                                        .detach()
-                                        .cpu()
-                                        .numpy()
-                                    )
-                                else:
-                                    loss, where_most_certain = (
-                                        image_classification_loss(
+                                # Model-specific forward and loss for evaluation
+                                if args.model == "ctm":
+                                    these_predictions, certainties, _ = model(inputs)
+                                    if args.use_ponder_loss:
+                                        loss, p_t = ponder_loss(
                                             these_predictions,
-                                            certainties,
+                                            certainties.unsqueeze(1),
                                             targets,
-                                            use_most_certain=True,
                                         )
+                                        where_to_eval = p_t.argmax(-1)
+                                        all_predictions_list.append(
+                                            these_predictions.argmax(1)
+                                            .detach()
+                                            .cpu()
+                                            .numpy()
+                                        )
+                                        all_predictions_most_certain_list.append(
+                                            these_predictions.argmax(1)[
+                                                torch.arange(
+                                                    these_predictions.size(0),
+                                                    device=these_predictions.device,
+                                                ),
+                                                where_to_eval,
+                                            ]
+                                            .detach()
+                                            .cpu()
+                                            .numpy()
+                                        )
+                                    else:
+                                        loss, where_most_certain = (
+                                            image_classification_loss(
+                                                these_predictions,
+                                                certainties,
+                                                targets,
+                                                use_most_certain=True,
+                                            )
+                                        )
+                                        all_predictions_list.append(
+                                            these_predictions.argmax(1)
+                                            .detach()
+                                            .cpu()
+                                            .numpy()
+                                        )
+                                        all_predictions_most_certain_list.append(
+                                            these_predictions.argmax(1)[
+                                                torch.arange(
+                                                    these_predictions.size(0),
+                                                    device=these_predictions.device,
+                                                ),
+                                                where_most_certain,
+                                            ]
+                                            .detach()
+                                            .cpu()
+                                            .numpy()
+                                        )
+    
+                                elif args.model == "ctm_gated":
+                                    these_predictions, certainties, _, these_exit_steps = model(inputs, use_early_exit=False)
+                                    loss, where_most_certain = ctm_gated_loss(
+                                        these_predictions, certainties, targets, these_exit_steps
                                     )
                                     all_predictions_list.append(
                                         these_predictions.argmax(1)
@@ -1453,75 +1477,51 @@ if __name__ == "__main__":
                                         .cpu()
                                         .numpy()
                                     )
-
-                            elif args.model == "ctm_gated":
-                                these_predictions, certainties, _, these_exit_steps = model(inputs, use_early_exit=False)
-                                loss, where_most_certain = ctm_gated_loss(
-                                    these_predictions, certainties, targets, these_exit_steps
+                                    if test_exit_steps is not None:
+                                        test_exit_steps.append(these_exit_steps.float().mean().item())
+    
+                                elif args.model == "lstm":
+                                    these_predictions, certainties, _ = model(inputs)
+                                    loss, where_most_certain = image_classification_loss(
+                                        these_predictions,
+                                        certainties,
+                                        targets,
+                                        use_most_certain=True,
+                                    )
+                                    all_predictions_list.append(
+                                        these_predictions.argmax(1).detach().cpu().numpy()
+                                    )
+                                    all_predictions_most_certain_list.append(
+                                        these_predictions.argmax(1)[
+                                            torch.arange(
+                                                these_predictions.size(0),
+                                                device=these_predictions.device,
+                                            ),
+                                            where_most_certain,
+                                        ]
+                                        .detach()
+                                        .cpu()
+                                        .numpy()
+                                    )
+    
+                                elif args.model == "ff":
+                                    these_predictions = model(inputs)
+                                    loss = nn.CrossEntropyLoss()(these_predictions, targets)
+                                    all_predictions_list.append(
+                                        these_predictions.argmax(1).detach().cpu().numpy()
+                                    )
+    
+                                all_losses.append(loss.item())
+    
+                                if (
+                                    args.n_test_batches != -1
+                                    and inferi >= args.n_test_batches - 1
+                                ):
+                                    break
+                                pbar_inner.set_description(
+                                    f"Computing metrics for test (Batch {inferi + 1})"
                                 )
-                                all_predictions_list.append(
-                                    these_predictions.argmax(1)
-                                    .detach()
-                                    .cpu()
-                                    .numpy()
-                                )
-                                all_predictions_most_certain_list.append(
-                                    these_predictions.argmax(1)[
-                                        torch.arange(
-                                            these_predictions.size(0),
-                                            device=these_predictions.device,
-                                        ),
-                                        where_most_certain,
-                                    ]
-                                    .detach()
-                                    .cpu()
-                                    .numpy()
-                                )
-                                if test_exit_steps is not None:
-                                    test_exit_steps.append(these_exit_steps.float().mean().item())
-
-                            elif args.model == "lstm":
-                                these_predictions, certainties, _ = model(inputs)
-                                loss, where_most_certain = image_classification_loss(
-                                    these_predictions,
-                                    certainties,
-                                    targets,
-                                    use_most_certain=True,
-                                )
-                                all_predictions_list.append(
-                                    these_predictions.argmax(1).detach().cpu().numpy()
-                                )
-                                all_predictions_most_certain_list.append(
-                                    these_predictions.argmax(1)[
-                                        torch.arange(
-                                            these_predictions.size(0),
-                                            device=these_predictions.device,
-                                        ),
-                                        where_most_certain,
-                                    ]
-                                    .detach()
-                                    .cpu()
-                                    .numpy()
-                                )
-
-                            elif args.model == "ff":
-                                these_predictions = model(inputs)
-                                loss = nn.CrossEntropyLoss()(these_predictions, targets)
-                                all_predictions_list.append(
-                                    these_predictions.argmax(1).detach().cpu().numpy()
-                                )
-
-                            all_losses.append(loss.item())
-
-                            if (
-                                args.n_test_batches != -1
-                                and inferi >= args.n_test_batches - 1
-                            ):
-                                break
-                            pbar_inner.set_description(
-                                f"Computing metrics for test (Batch {inferi + 1})"
-                            )
-                            pbar_inner.update(1)
+                                pbar_inner.update(1)
 
                     all_targets = np.concatenate(all_targets_list)
                     all_predictions = np.concatenate(all_predictions_list)
