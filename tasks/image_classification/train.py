@@ -1370,18 +1370,11 @@ if __name__ == "__main__":
 
                 # Switch to eval mode for test metrics (fixed BN stats)
                 model.eval()
-                pbar.set_description("Tracking: Computing TEST metrics")
                 with torch.inference_mode():  # Use inference_mode for test eval
                     if test_data is None:
                         pbar.set_description("Tracking: No test data, skipping TEST metrics")
-                        test_losses.append(0.0)
-                        if args.model in ["ctm", "lstm", "ctm_gated"]:
-                            test_accuracies.append(np.zeros(args.iterations))
-                            test_accuracies_most_certain.append(0.0)
-                        else:
-                            test_accuracies.append(0.0)
-                        wandb.log({"Test Loss": 0.0, "Test Accuracy": 0.0}, step=bi)
                     else:
+                        pbar.set_description(f"Tracking: Computing TEST metrics (iter {bi})")
                         loader = torch.utils.data.DataLoader(
                             test_data,
                             batch_size=args.batch_size_test,
