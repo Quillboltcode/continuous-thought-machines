@@ -605,6 +605,11 @@ def get_dataset(
         val_path = os.path.join(root, "val")
         test_path = os.path.join(root, "test")
         
+        print(f"[RAFDB] Checking dataset folders in: {root}")
+        print(f"[RAFDB] train folder exists: {os.path.exists(os.path.join(root, 'train'))}")
+        print(f"[RAFDB] val folder exists: {os.path.exists(val_path)}")
+        print(f"[RAFDB] test folder exists: {os.path.exists(test_path)}")
+        
         if os.path.exists(val_path):
             val_data = datasets.ImageFolder(val_path, transform=test_transform)
             test_data = datasets.ImageFolder(test_path, transform=test_transform) if os.path.exists(test_path) else None
