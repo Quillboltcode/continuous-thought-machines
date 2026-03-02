@@ -1837,7 +1837,10 @@ if __name__ == "__main__":
                 inputs, targets = inputs.to(device), targets.to(device)
                 with torch.autocast(device_type="cuda" if "cuda" in device else "cpu", dtype=torch.float16, enabled=args.use_amp):
                     if args.model in ["ctm", "lstm", "ctm_gated"]:
-                        predictions, certainties, _ = model(inputs)
+                        if args.model == "ctm_gated":
+                            predictions, certainties, _, _ = model(inputs)
+                        else:
+                            predictions, certainties, _ = model(inputs)
                         loss, where_most_certain = image_classification_loss(
                             predictions, certainties, targets, use_most_certain=True
                         )
