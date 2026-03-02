@@ -1367,28 +1367,38 @@ if __name__ == "__main__":
                 model.eval()
                 pbar.set_description("Tracking: Computing TEST metrics")
                 with torch.inference_mode():  # Use inference_mode for test eval
-                    loader = torch.utils.data.DataLoader(
-                        test_data,
-                        batch_size=args.batch_size_test,
-                        shuffle=True,
-                        num_workers=num_workers_test,
-                    )
-                    all_targets_list = []
-                    all_predictions_list = []
-                    all_predictions_most_certain_list = []  # Only for CTM/LSTM
-                    all_losses = []
+                    if test_data is None:
+                        pbar.set_description("Tracking: No test data, skipping TEST metrics")
+                        test_losses.append(0.0)
+                        if args.model in ["ctm", "lstm", "ctm_gated"]:
+                            test_accuracies.append(np.zeros(args.iterations))
+                            test_accuracies_most_certain.append(0.0)
+                        else:
+                            test_accuracies.append(0.0)
+                        wandb.log({"Test Loss": 0.0, "Test Accuracy": 0.0}, step=bi)
+                    else:
+                        loader = torch.utils.data.DataLoader(
+                            test_data,
+                            batch_size=args.batch_size_test,
+                            shuffle=True,
+                            num_workers=num_workers_test,
+                        )
+                        all_targets_list = []
+                        all_predictions_list = []
+                        all_predictions_most_certain_list = []  # Only for CTM/LSTM
+                        all_losses = []
 
-                    with tqdm(
-                        total=len(loader),
-                        initial=0,
-                        leave=False,
-                        position=1,
-                        dynamic_ncols=True,
-                    ) as pbar_inner:
-                        for inferi, (inputs, targets) in enumerate(loader):
-                            inputs = inputs.to(device)
-                            targets = targets.to(device)
-                            all_targets_list.append(targets.detach().cpu().numpy())
+                        with tqdm(
+                            total=len(loader),
+                            initial=0,
+                            leave=False,
+                            position=1,
+                            dynamic_ncols=True,
+                        ) as pbar_inner:
+                            for inferi, (inputs, targets) in enumerate(loader):
+                                inputs = inputs.to(device)
+                                targets = targets.to(device)
+                                all_targets_list.append(targets.detach().cpu().numpy())
 
                             # Model-specific forward and loss for evaluation
                             if args.model == "ctm":
