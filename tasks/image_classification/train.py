@@ -600,12 +600,32 @@ def get_dataset(
         train_data = datasets.ImageFolder(
             os.path.join(root, "train"), transform=train_transform
         )
-        val_data = datasets.ImageFolder(
-            os.path.join(root, "val"), transform=test_transform
-        )
-        test_data = datasets.ImageFolder(
-            os.path.join(root, "test"), transform=test_transform
-        )
+        
+        # RAFDB may only have train and test folders (no val folder)
+        val_path = os.path.join(root, "val")
+        test_path = os.path.join(root, "test")
+        
+        if os.path.exists(val_path):
+            val_data = datasets.ImageFolder(val_path, transform=test_transform)
+            test_data = datasets.ImageFolder(test_path, transform=test_transform) if os.path.exists(test_path) else None
+        else:
+            # No val folder - use test as validation or split train
+            if use_test_as_val:
+                val_data = datasets.ImageFolder(test_path, transform=test_transform) if os.path.exists(test_path) else None
+                test_data = None
+            elif val_split_ratio > 0.0:
+                train_size = int((1.0 - val_split_ratio) * len(train_data))
+                val_size = len(train_data) - train_size
+                train_data, val_data = torch.utils.data.random_split(
+                    train_data,
+                    [train_size, val_size],
+                    generator=torch.Generator().manual_seed(412),
+                )
+                test_data = datasets.ImageFolder(test_path, transform=test_transform) if os.path.exists(test_path) else None
+            else:
+                val_data = None
+                test_data = datasets.ImageFolder(test_path, transform=test_transform) if os.path.exists(test_path) else None
+        
         class_labels = [
             "Surprise",
             "Fear",
@@ -615,20 +635,6 @@ def get_dataset(
             "Anger",
             "Neutral",
         ]
-
-        if use_test_as_val:
-            val_data = test_data
-            test_data = None
-        elif val_split_ratio > 0.0:
-            train_size = int((1.0 - val_split_ratio) * len(train_data))
-            val_size = len(train_data) - train_size
-            train_data, val_data = torch.utils.data.random_split(
-                train_data,
-                [train_size, val_size],
-                generator=torch.Generator().manual_seed(412),
-            )
-        else:
-            test_data = test_data
     else:
         raise NotImplementedError
 
