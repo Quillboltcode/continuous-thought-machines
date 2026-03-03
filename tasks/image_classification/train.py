@@ -144,6 +144,12 @@ def parse_args():
         default=0.2,
         help="Lambda for PonderLoss geometric distribution.",
     )
+    parser.add_argument(
+        "--beta",
+        type=float,
+        default=0.01,
+        help="Beta weight for KL regularization in ponder/loop loss.",
+    )
     # CTM-Gated specific
     parser.add_argument(
         "--exit_strategy",
@@ -791,13 +797,13 @@ if __name__ == "__main__":
             exit_strategy=args.exit_strategy,
             exit_threshold=args.exit_threshold,
             lambda_p=args.lambda_p,
-            beta=0.01,
+            beta=args.beta,
             min_steps=args.min_steps,
         ).to(device)
         ctm_gated_loss = CTMGatedLoss(
             loss_type=args.loss_type,
             lambda_p=args.lambda_p,
-            beta=0.01,
+            beta=args.beta,
             use_most_certain=True,
             max_steps=args.iterations
         ).to(device)
