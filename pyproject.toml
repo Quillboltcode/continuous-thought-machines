@@ -25,6 +25,7 @@ dependencies = [
     "wandb>=0.23.0",
     "pytest>=9.0.2",
     "fvcore>=0.1.5",
+    "tensorboard>=2.20.0",
 ]
 readme = "README.md"
 requires-python = ">=3.12"
