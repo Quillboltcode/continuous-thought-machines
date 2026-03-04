@@ -918,9 +918,13 @@ if __name__ == "__main__":
     # Conditional metrics for CTM/LSTM/CTM-Gated
     train_accuracies_most_certain = [] if args.model in ["ctm", "lstm", "ctm_gated"] else None
     test_accuracies_most_certain = [] if args.model in ["ctm", "lstm", "ctm_gated"] else None
-    # CTM-Gated specific: track exit steps
+    # CTM-Gated specific: track exit steps and certainty
     train_exit_steps = [] if args.model == "ctm_gated" else None
     test_exit_steps = [] if args.model == "ctm_gated" else None
+    train_certainty_at_exit = [] if args.model == "ctm_gated" else None
+    test_certainty_at_exit = [] if args.model == "ctm_gated" else None
+    train_certainty_per_step = [] if args.model == "ctm_gated" else None
+    test_certainty_per_step = [] if args.model == "ctm_gated" else None
 
     # Best model tracking
     best_val_acc = 0.0
@@ -1101,7 +1105,14 @@ if __name__ == "__main__":
                         .item()
                     )
                     avg_exit_step = exit_steps.float().mean().item()
-                    pbar_desc = f"CTM-Gated Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Exit_step={avg_exit_step:0.2f}"
+                    
+                    # Compute certainty statistics
+                    avg_certainty_per_step = certainties[:, 1, :].mean(dim=0)  # [T]
+                    certainty_at_exit = certainties[:, 1, :].gather(1, exit_steps.unsqueeze(1)).mean()
+                    min_certainty_at_exit = certainties[:, 1, :].gather(1, exit_steps.unsqueeze(1)).min()
+                    max_certainty_at_exit = certainties[:, 1, :].gather(1, exit_steps.unsqueeze(1)).max()
+                    
+                    pbar_desc = f"CTM-Gated Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Exit_step={avg_exit_step:0.2f}. Cert_exit={certainty_at_exit.item():0.3f}"
 
                 elif args.model == "lstm":
                     predictions, certainties, synchronisation = model(inputs)
@@ -1282,6 +1293,13 @@ if __name__ == "__main__":
                                 )
                                 if train_exit_steps is not None:
                                     train_exit_steps.append(these_exit_steps.float().mean().item())
+                                if train_certainty_at_exit is not None:
+                                    # certainties shape: [B, 2, T] where [:, 1, :] is certainty
+                                    certainty_at_exit = certainties[:, 1, :].gather(1, these_exit_steps.unsqueeze(1)).mean().item()
+                                    train_certainty_at_exit.append(certainty_at_exit)
+                                if train_certainty_per_step is not None:
+                                    # Store average certainty per step
+                                    train_certainty_per_step.append(certainties[:, 1, :].mean(dim=0).cpu().numpy())
 
                             elif args.model == "lstm":
                                 these_predictions, certainties, _ = model(inputs)
@@ -1367,6 +1385,16 @@ if __name__ == "__main__":
                             log_dict[f"Train Accuracy (Tick {i})"] = acc
                         if args.model == "ctm_gated" and train_exit_steps:
                             log_dict["Train Avg Exit Steps"] = np.mean(train_exit_steps)
+                            if train_certainty_at_exit:
+                                log_dict["Train Certainty at Exit"] = np.mean(train_certainty_at_exit)
+                            if train_certainty_per_step:
+                                # Log certainty at specific steps
+                                avg_certainty_per_step = np.mean(train_certainty_per_step, axis=0)
+                                log_dict["Train Certainty (Step 5)"] = avg_certainty_per_step[4] if len(avg_certainty_per_step) > 4 else 0
+                                log_dict["Train Certainty (Step 10)"] = avg_certainty_per_step[9] if len(avg_certainty_per_step) > 9 else 0
+                                log_dict["Train Certainty (Final)"] = avg_certainty_per_step[-1]
+                                # Log full trajectory as histogram
+                                log_dict["Train Certainty Trajectory"] = wandb.Histogram(avg_certainty_per_step)
                     else:  # FF
                         log_dict["Train Accuracy"] = current_train_accuracies
 
@@ -1485,7 +1513,12 @@ if __name__ == "__main__":
                                     )
                                     if test_exit_steps is not None:
                                         test_exit_steps.append(these_exit_steps.float().mean().item())
-    
+                                    if test_certainty_at_exit is not None:
+                                        certainty_at_exit = certainties[:, 1, :].gather(1, these_exit_steps.unsqueeze(1)).mean().item()
+                                        test_certainty_at_exit.append(certainty_at_exit)
+                                    if test_certainty_per_step is not None:
+                                        test_certainty_per_step.append(certainties[:, 1, :].mean(dim=0).cpu().numpy())
+
                                 elif args.model == "lstm":
                                     these_predictions, certainties, _ = model(inputs)
                                     loss, where_most_certain = image_classification_loss(
@@ -1565,6 +1598,16 @@ if __name__ == "__main__":
                             log_dict[f"Test Accuracy (Tick {i})"] = acc
                         if args.model == "ctm_gated" and test_exit_steps:
                             log_dict["Test Avg Exit Steps"] = np.mean(test_exit_steps)
+                            if test_certainty_at_exit:
+                                log_dict["Test Certainty at Exit"] = np.mean(test_certainty_at_exit)
+                            if test_certainty_per_step:
+                                # Log certainty at specific steps
+                                avg_certainty_per_step = np.mean(test_certainty_per_step, axis=0)
+                                log_dict["Test Certainty (Step 5)"] = avg_certainty_per_step[4] if len(avg_certainty_per_step) > 4 else 0
+                                log_dict["Test Certainty (Step 10)"] = avg_certainty_per_step[9] if len(avg_certainty_per_step) > 9 else 0
+                                log_dict["Test Certainty (Final)"] = avg_certainty_per_step[-1]
+                                # Log full trajectory as histogram
+                                log_dict["Test Certainty Trajectory"] = wandb.Histogram(avg_certainty_per_step)
                     else:  # FF
                         log_dict["Test Accuracy"] = current_test_accuracies
 
