@@ -335,7 +335,32 @@ if __name__=='__main__':
                             fig.savefig(f'{args.output_dir}/accuracy_types_{topk}.pdf', dpi=200)
                             plt.close(fig)
                             print(f'k={topk}. Accuracy most certain at last internal tick={100*np.array(accs_certain)[-1]:0.4f}')  # Using certainty based approach
+                            
+                            # Compute and print where_most_certain statistics at the final tick
+                            where_most_certain_final = concatenated_certainties[:,1,:].argmax(1)
+                            print(f'  Where most certain (final tick) - Mean: {where_most_certain_final.mean():.2f}, '
+                                  f'Median: {np.median(where_most_certain_final):.2f}, '
+                                  f'Min: {where_most_certain_final.min()}, Max: {where_most_certain_final.max()}, '
+                                  f'Std: {where_most_certain_final.std():.2f}')
+                            # Save where_most_certain distribution to file
+                            np.save(f'{args.output_dir}/where_most_certain_distribution_top{topk}.npy', where_most_certain_final)
 
+                        # Plot histogram of where_most_certain distribution
+                        where_most_certain_all = concatenated_certainties[:,1,:].argmax(1)
+                        fig = plt.figure(figsize=(8*figscale, 5*figscale))
+                        ax = fig.add_subplot(111)
+                        bins = np.arange(0, concatenated_certainties.shape[-1]+1)
+                        ax.hist(where_most_certain_all, bins=bins, color='steelblue', edgecolor='black', alpha=0.7)
+                        ax.axvline(where_most_certain_all.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {where_most_certain_all.mean():.2f}')
+                        ax.axvline(np.median(where_most_certain_all), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(where_most_certain_all):.2f}')
+                        ax.set_xlabel('Tick Where Most Certain')
+                        ax.set_ylabel('Count')
+                        ax.set_title('Distribution of Most Certain Tick')
+                        ax.legend()
+                        fig.tight_layout(pad=0.1)
+                        fig.savefig(f'{args.output_dir}/where_most_certain_histogram.png', dpi=200)
+                        fig.savefig(f'{args.output_dir}/where_most_certain_histogram.pdf', dpi=200)
+                        plt.close(fig)
 
                         indices_over_80 = []
                         classes_80 = {}

@@ -218,7 +218,7 @@ class CTMGated(nn.Module):
             halt_prob = self.lambda_p * torch.ones(B, device=synchronisation_out.device)
             
         elif self.exit_strategy == 'normal':
-            progress = step / max(total_steps - 1, 1)
+            progress = torch.tensor(step / max(total_steps - 1, 1), device=synchronisation_out.device)
             mean = 0.5
             std = 0.25
             cdf_value = 0.5 * (1 + torch.erf((progress - mean) / (std * math.sqrt(2))))

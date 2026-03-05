@@ -1198,6 +1198,7 @@ if __name__ == "__main__":
                     all_targets_list = []
                     all_predictions_list = []  # List to store raw predictions (B, C, T) or (B, C)
                     all_predictions_most_certain_list = []  # Only for CTM/LSTM
+                    all_where_most_certain_list = []  # Store tick indices where most certain
                     all_losses = []
 
                     with tqdm(
@@ -1240,6 +1241,7 @@ if __name__ == "__main__":
                                         .cpu()
                                         .numpy()
                                     )  # Shape (B,)
+                                    all_where_most_certain_list.append(where_to_eval.detach().cpu().numpy())
                                 else:
                                     loss, where_most_certain = (
                                         image_classification_loss(
@@ -1267,6 +1269,7 @@ if __name__ == "__main__":
                                         .cpu()
                                         .numpy()
                                     )  # Shape (B,)
+                                    all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
 
                             elif args.model == "ctm_gated":
                                 these_predictions, certainties, _, these_exit_steps = model(inputs, use_early_exit=False)
@@ -1291,6 +1294,7 @@ if __name__ == "__main__":
                                     .cpu()
                                     .numpy()
                                 )
+                                all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
                                 if train_exit_steps is not None:
                                     train_exit_steps.append(these_exit_steps.float().mean().item())
                                 if train_certainty_at_exit is not None:
@@ -1324,6 +1328,7 @@ if __name__ == "__main__":
                                     .cpu()
                                     .numpy()
                                 )  # Shape (B,)
+                                all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
 
                             elif args.model == "ff":
                                 these_predictions = model(inputs)
@@ -1381,6 +1386,15 @@ if __name__ == "__main__":
                         log_dict["Train Accuracy (Most Certain)"] = (
                             current_train_accuracies_most_certain
                         )
+                        # Log where_most_certain statistics
+                        if all_where_most_certain_list:
+                            all_where_most_certain = np.concatenate(all_where_most_certain_list)
+                            log_dict["Train Most Certain Tick (Mean)"] = all_where_most_certain.mean()
+                            log_dict["Train Most Certain Tick (Median)"] = np.median(all_where_most_certain)
+                            log_dict["Train Most Certain Tick (Min)"] = all_where_most_certain.min()
+                            log_dict["Train Most Certain Tick (Max)"] = all_where_most_certain.max()
+                            log_dict["Train Most Certain Tick (Std)"] = all_where_most_certain.std()
+                            log_dict["Train Most Certain Tick Distribution"] = wandb.Histogram(all_where_most_certain)
                         for i, acc in enumerate(current_train_accuracies):
                             log_dict[f"Train Accuracy (Tick {i})"] = acc
                         if args.model == "ctm_gated" and train_exit_steps:
@@ -1418,6 +1432,7 @@ if __name__ == "__main__":
                         all_targets_list = []
                         all_predictions_list = []
                         all_predictions_most_certain_list = []  # Only for CTM/LSTM
+                        all_where_most_certain_list = []  # Store tick indices where most certain
                         all_losses = []
 
                         with tqdm(
@@ -1460,6 +1475,7 @@ if __name__ == "__main__":
                                             .cpu()
                                             .numpy()
                                         )
+                                        all_where_most_certain_list.append(where_to_eval.detach().cpu().numpy())
                                     else:
                                         loss, where_most_certain = (
                                             image_classification_loss(
@@ -1487,7 +1503,8 @@ if __name__ == "__main__":
                                             .cpu()
                                             .numpy()
                                         )
-    
+                                        all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+
                                 elif args.model == "ctm_gated":
                                     these_predictions, certainties, _, these_exit_steps = model(inputs, use_early_exit=False)
                                     loss, where_most_certain = ctm_gated_loss(
@@ -1511,6 +1528,7 @@ if __name__ == "__main__":
                                         .cpu()
                                         .numpy()
                                     )
+                                    all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
                                     if test_exit_steps is not None:
                                         test_exit_steps.append(these_exit_steps.float().mean().item())
                                     if test_certainty_at_exit is not None:
@@ -1542,7 +1560,8 @@ if __name__ == "__main__":
                                         .cpu()
                                         .numpy()
                                     )
-    
+                                    all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+
                                 elif args.model == "ff":
                                     these_predictions = model(inputs)
                                     loss = nn.CrossEntropyLoss()(these_predictions, targets)
@@ -1594,6 +1613,15 @@ if __name__ == "__main__":
                         log_dict["Test Accuracy (Most Certain)"] = (
                             current_test_accuracies_most_certain
                         )
+                        # Log where_most_certain statistics
+                        if all_where_most_certain_list:
+                            all_where_most_certain = np.concatenate(all_where_most_certain_list)
+                            log_dict["Test Most Certain Tick (Mean)"] = all_where_most_certain.mean()
+                            log_dict["Test Most Certain Tick (Median)"] = np.median(all_where_most_certain)
+                            log_dict["Test Most Certain Tick (Min)"] = all_where_most_certain.min()
+                            log_dict["Test Most Certain Tick (Max)"] = all_where_most_certain.max()
+                            log_dict["Test Most Certain Tick (Std)"] = all_where_most_certain.std()
+                            log_dict["Test Most Certain Tick Distribution"] = wandb.Histogram(all_where_most_certain)
                         for i, acc in enumerate(current_test_accuracies):
                             log_dict[f"Test Accuracy (Tick {i})"] = acc
                         if args.model == "ctm_gated" and test_exit_steps:
