@@ -32,6 +32,7 @@ def parse_args():
     parser.add_argument("--grayscale", action="store_true", default=False, help="Use grayscale images")
     parser.add_argument("--conv1_channels", type=int, default=3, help="Number of input channels for conv1 (1 for grayscale, 3 for RGB)")
     parser.add_argument("--conv1_kernel_size", type=int, default=7, help="Kernel size for conv1")
+    parser.add_argument("--convert_grayscale_to_rgb", action="store_true", default=False, help="Convert grayscale images to 3-channel RGB")
 
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training.")
     parser.add_argument("--batch_size_test", type=int, default=32, help="Batch size for testing.")
@@ -93,9 +94,9 @@ class FinetuneModel(nn.Module):
         return self.backbone(x)
 
 
-def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False, grayscale=False):
+def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False, grayscale=False, convert_grayscale_to_rgb=False):
     if dataset == "FerPlusPlus":
-        if grayscale:
+        if grayscale and not convert_grayscale_to_rgb:
             dataset_mean = [0.5]
             dataset_std = [0.5]
         else:
@@ -103,7 +104,7 @@ def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False, grays
             dataset_std = [0.229, 0.224, 0.225]
         normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
 
-        if grayscale:
+        if grayscale and not convert_grayscale_to_rgb:
             train_transform = transforms.Compose([
                 transforms.Resize((100, 100)),
                 transforms.RandomHorizontalFlip(),
@@ -114,6 +115,20 @@ def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False, grays
             test_transform = transforms.Compose([
                 transforms.Resize((100, 100)),
                 transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                normalize,
+            ])
+        elif convert_grayscale_to_rgb:
+            train_transform = transforms.Compose([
+                transforms.Resize((100, 100)),
+                transforms.RandomHorizontalFlip(),
+                transforms.Grayscale(num_output_channels=3),
+                transforms.ToTensor(),
+                normalize,
+            ])
+            test_transform = transforms.Compose([
+                transforms.Resize((100, 100)),
+                transforms.Grayscale(num_output_channels=3),
                 transforms.ToTensor(),
                 normalize,
             ])
@@ -162,12 +177,12 @@ if __name__ == "__main__":
         project="continuous-thought-machines-fer",
         dir=args.log_dir,
         config=vars(args),
-        name=f"finetune_{args.backbone}_grayscale={args.grayscale}",
+        name=f"finetune_{args.backbone}_grayscale={args.grayscale}_rgb_conv={args.convert_grayscale_to_rgb}",
         reinit=True,
     )
 
     train_data, val_data, test_data, class_labels = get_dataset(
-        args.dataset, args.data_root, args.val_split_ratio, args.use_test_as_val, args.grayscale
+        args.dataset, args.data_root, args.val_split_ratio, args.use_test_as_val, args.grayscale, args.convert_grayscale_to_rgb
     )
 
     first_sample, first_label = train_data[0]
@@ -193,6 +208,10 @@ if __name__ == "__main__":
     device = f"cuda:{args.device[0]}" if args.device[0] >= 0 else "cpu"
     print(f"Running on {device}")
 
+    # If converting grayscale to RGB, ensure conv1_channels is 3
+    if args.convert_grayscale_to_rgb:
+        args.conv1_channels = 3
+    
     model = FinetuneModel(args.backbone, num_classes, pretrained=args.pretrained, grayscale=args.grayscale, conv1_channels=args.conv1_channels, conv1_kernel_size=args.conv1_kernel_size).to(device)
 
     print(f"Total params: {sum(p.numel() for p in model.parameters())}")
