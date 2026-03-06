@@ -557,16 +557,15 @@ if __name__=='__main__':
                             if tick < sample_activations.shape[0]:
                                 # Use averaged activations for cleaner visualization
                                 act = avg_activations[tick]
-                                # Compute correlation matrix
-                                corr = np.corrcoef(act.reshape(-1, n_neurons // 16).mean(1, keepdims=True).repeat(16, axis=1).flatten()[:64].reshape(8, 8))
-                                # For simplicity, just show the activation pattern as a matrix
-                                # Reshape to approximate grid if possible
+                                # Reshape to approximate 2D grid if possible
                                 grid_size = int(np.sqrt(n_neurons))
-                                if grid_size * grid_size == n_neurons:
-                                    act_matrix = act[:grid_size*grid_size].reshape(grid_size, grid_size)
-                                else:
-                                    # Truncate or pad to nearest square
-                                    act_matrix = act[:grid_size*grid_size].reshape(grid_size, grid_size)
+                                n_elements = min(grid_size * grid_size, len(act))
+                                act_truncated = act[:n_elements]
+                                try:
+                                    act_matrix = act_truncated.reshape(grid_size, grid_size)
+                                except ValueError:
+                                    # Fallback: show as 1D heat
+                                    act_matrix = act_truncated.reshape(1, -1)
                                 
                                 im = ax.imshow(act_matrix, cmap=cmap_synch, aspect='auto')
                                 ax.set_title(f'Tick {tick+1}')
@@ -603,10 +602,16 @@ if __name__=='__main__':
                             n_show = min(64, acts.shape[1])
                             acts_sub = acts[:, :n_show]
                             # Compute correlation matrix
-                            if acts_sub.shape[0] > 1:
-                                corr = np.corrcoef(acts_sub.T)
-                            else:
-                                corr = np.outer(acts_sub[0], acts_sub[0])
+                            try:
+                                if acts_sub.shape[0] > 1:
+                                    corr = np.corrcoef(acts_sub.T)
+                                    # Handle NaN values if no variance
+                                    corr = np.nan_to_num(corr, nan=0.0)
+                                else:
+                                    corr = np.outer(acts_sub[0], acts_sub[0])
+                            except Exception:
+                                # Fallback: identity matrix
+                                corr = np.eye(n_show)
                             corr_matrices.append(corr)
                         
                         # Create multi-panel correlation plot
