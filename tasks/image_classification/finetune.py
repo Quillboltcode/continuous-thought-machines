@@ -30,6 +30,8 @@ def parse_args():
     parser.add_argument("--backbone", type=str, default="resnet18", help="Backbone model")
     parser.add_argument("--pretrained", action="store_true", default=True, help="Use pretrained weights")
     parser.add_argument("--grayscale", action="store_true", default=False, help="Use grayscale images")
+    parser.add_argument("--conv1_channels", type=int, default=3, help="Number of input channels for conv1 (1 for grayscale, 3 for RGB)")
+    parser.add_argument("--conv1_kernel_size", type=int, default=7, help="Kernel size for conv1")
 
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training.")
     parser.add_argument("--batch_size_test", type=int, default=32, help="Batch size for testing.")
@@ -63,7 +65,7 @@ def parse_args():
 
 
 class FinetuneModel(nn.Module):
-    def __init__(self, backbone_name, num_classes, pretrained=True, grayscale=False):
+    def __init__(self, backbone_name, num_classes, pretrained=True, grayscale=False, conv1_channels=3, conv1_kernel_size=7):
         super().__init__()
         self.grayscale = grayscale
         
@@ -78,10 +80,12 @@ class FinetuneModel(nn.Module):
         
         in_features = self.backbone.fc.in_features
         
-        if grayscale:
-            self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        if conv1_channels == 1 or grayscale:
+            self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=conv1_kernel_size, stride=2, padding=conv1_kernel_size//2, bias=False)
             if pretrained:
                 self.backbone.conv1.weight.data = self.backbone.conv1.weight.data.mean(dim=1, keepdim=True)
+        else:
+            self.backbone.conv1 = nn.Conv2d(3, 64, kernel_size=conv1_kernel_size, stride=2, padding=conv1_kernel_size//2, bias=False)
         
         self.backbone.fc = nn.Linear(in_features, num_classes)
     
@@ -189,7 +193,7 @@ if __name__ == "__main__":
     device = f"cuda:{args.device[0]}" if args.device[0] >= 0 else "cpu"
     print(f"Running on {device}")
 
-    model = FinetuneModel(args.backbone, num_classes, pretrained=args.pretrained, grayscale=args.grayscale).to(device)
+    model = FinetuneModel(args.backbone, num_classes, pretrained=args.pretrained, grayscale=args.grayscale, conv1_channels=args.conv1_channels, conv1_kernel_size=args.conv1_kernel_size).to(device)
 
     print(f"Total params: {sum(p.numel() for p in model.parameters())}")
 
