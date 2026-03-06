@@ -76,6 +76,8 @@ def parse_args():
     parser.add_argument('--inference_iterations', type=int, default=50, help="Iterations to use during inference.")
     parser.add_argument('--data_indices', type=int, nargs='+', default=[], help="Use specific indices in validation data for demos, otherwise random.")
     parser.add_argument('--N_to_viz', type=int, default=5, help="When not supplying data_indices.")
+    parser.add_argument('--synch_matrix_ticks', type=int, nargs='+', default=[1, 5, 10, 20, 49], help="Ticks to show in synchronization matrix plot.")
+    parser.add_argument('--save_synch_gif', action=argparse.BooleanOptionalAction, default=True, help="Save GIF of synchronization matrix evolution.")
     
     return parser.parse_args()
 
@@ -260,6 +262,7 @@ if __name__=='__main__':
     tracked_certainties = []
     tracked_targets = []
     tracked_predictions = []
+    tracked_activations = []  # For synchronization matrix visualization
 
     if model.iterations != args.inference_iterations:
         print('WARNING: you are setting inference iterations to a value not used during training!')
@@ -278,11 +281,13 @@ if __name__=='__main__':
                         dynamics_inputs, _ = next(iter(loader_crop))  # Use this because of batching
                         _, _, _, _, post_activations_viz, _ = model(inputs, track=True)
                         plot_neural_dynamics(post_activations_viz, 15*10, args.output_dir, axis_snap=True, N_per_row=15)
-                    predictions, certainties, synchronisation = model(inputs)
+                    predictions, certainties, synchronisation, _, post_activations, _ = model(inputs, track=True)
 
                     tracked_predictions.append(predictions.detach().cpu().numpy())
                     tracked_targets.append(targets.detach().cpu().numpy())
                     tracked_certainties.append(certainties.detach().cpu().numpy())
+                    # Track post-activations for synchronization matrix: shape (B, neurons, steps)
+                    tracked_activations.append(np.transpose(post_activations, (0, 2, 1)))  # (B, steps, neurons)
 
                     
 
@@ -509,6 +514,189 @@ if __name__=='__main__':
                         fig.savefig(f'{args.output_dir}/imagenet_calibration.png', dpi=200)
                         fig.savefig(f'{args.output_dir}/imagenet_calibration.pdf', dpi=200)
                         plt.close(fig)
+
+                        # ========================================================================
+                        # Synchronization Matrix Visualization
+                        # ========================================================================
+                        # Compute correlation matrix from activations at each tick
+                        # tracked_activations shape: (num_batches, batch_size, steps, neurons)
+                        concatenated_activations = np.concatenate(tracked_activations, axis=0)  # (B_total, T, N)
+                        n_neurons = concatenated_activations.shape[-1]
+                        
+                        # Use only the first sample for visualization (to keep it clean)
+                        # Or average across all samples for typical pattern
+                        sample_activations = concatenated_activations[0]  # (T, N) for first sample
+                        avg_activations = concatenated_activations.mean(axis=0)  # (T, N) averaged
+
+                        # Function to compute correlation matrix from activations
+                        def compute_corr_matrix(activations_step):
+                            """Compute correlation matrix for a single time step."""
+                            # activations_step: (N,) or (B, N)
+                            if activations_step.ndim == 1:
+                                # Single sample: use outer product
+                                return np.outer(activations_step, activations_step)
+                            else:
+                                # Multiple samples: compute covariance
+                                return np.cov(activations_step.T)
+
+                        # Option 1: Multi-panel static plot for selected ticks
+                        selected_ticks = args.synch_matrix_ticks
+                        n_panels = len(selected_ticks)
+                        n_cols = min(5, n_panels)
+                        n_rows = (n_panels + n_cols - 1) // n_cols
+                        
+                        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 3.5*n_rows))
+                        if n_panels == 1:
+                            axes = np.array([axes])
+                        axes = axes.flatten()
+                        
+                        cmap_synch = sns.diverging_palette(220, 20, as_cmap=True)
+                        
+                        for idx, tick in enumerate(selected_ticks):
+                            ax = axes[idx]
+                            if tick < sample_activations.shape[0]:
+                                # Use averaged activations for cleaner visualization
+                                act = avg_activations[tick]
+                                # Compute correlation matrix
+                                corr = np.corrcoef(act.reshape(-1, n_neurons // 16).mean(1, keepdims=True).repeat(16, axis=1).flatten()[:64].reshape(8, 8))
+                                # For simplicity, just show the activation pattern as a matrix
+                                # Reshape to approximate grid if possible
+                                grid_size = int(np.sqrt(n_neurons))
+                                if grid_size * grid_size == n_neurons:
+                                    act_matrix = act[:grid_size*grid_size].reshape(grid_size, grid_size)
+                                else:
+                                    # Truncate or pad to nearest square
+                                    act_matrix = act[:grid_size*grid_size].reshape(grid_size, grid_size)
+                                
+                                im = ax.imshow(act_matrix, cmap=cmap_synch, aspect='auto')
+                                ax.set_title(f'Tick {tick+1}')
+                                ax.axis('off')
+                                plt.colorbar(im, ax=ax, fraction=0.046)
+                            else:
+                                ax.axis('off')
+                        
+                        # Hide unused subplots
+                        for idx in range(n_panels, len(axes)):
+                            axes[idx].axis('off')
+                        
+                        fig.suptitle('Neuron Activation Patterns at Selected Ticks\n(Each tile = neuron activation)', fontsize=12)
+                        fig.tight_layout(pad=0.1)
+                        fig.savefig(f'{args.output_dir}/synch_matrix_selected_ticks.png', dpi=200)
+                        fig.savefig(f'{args.output_dir}/synch_matrix_selected_ticks.pdf', dpi=200)
+                        plt.close(fig)
+
+                        # Option 2: Correlation matrix evolution (pairwise neuron correlations)
+                        # Compute average correlation matrix across samples for each tick
+                        print("Computing correlation matrices...")
+                        corr_matrices = []
+                        tick_indices = list(range(0, min(concatenated_activations.shape[1], 50), max(1, min(concatenated_activations.shape[1], 50)//10)))
+                        
+                        # Limit to reasonable number of ticks for visualization
+                        max_ticks_for_corr = 20
+                        step_size = max(1, concatenated_activations.shape[1] // max_ticks_for_corr)
+                        tick_indices = list(range(0, concatenated_activations.shape[1], step_size))
+                        
+                        for tick_idx in tqdm(tick_indices, desc="Computing correlation matrices"):
+                            # Get activations at this tick for all samples
+                            acts = concatenated_activations[:, tick_idx, :]  # (B, N)
+                            # Subsample neurons for cleaner visualization
+                            n_show = min(64, acts.shape[1])
+                            acts_sub = acts[:, :n_show]
+                            # Compute correlation matrix
+                            if acts_sub.shape[0] > 1:
+                                corr = np.corrcoef(acts_sub.T)
+                            else:
+                                corr = np.outer(acts_sub[0], acts_sub[0])
+                            corr_matrices.append(corr)
+                        
+                        # Create multi-panel correlation plot
+                        n_corr_panels = len(corr_matrices)
+                        n_cols_corr = min(5, n_corr_panels)
+                        n_rows_corr = (n_corr_panels + n_cols_corr - 1) // n_cols_corr
+                        
+                        fig, axes = plt.subplots(n_rows_corr, n_cols_corr, figsize=(4*n_cols_corr, 3.5*n_rows_corr))
+                        if n_corr_panels == 1:
+                            axes = np.array([axes])
+                        axes = axes.flatten()
+                        
+                        vmax = max(np.abs(corr_matrices[0]).min(), np.abs(corr_matrices[0]).max()) if corr_matrices else 1
+                        
+                        for idx, (tick_idx, corr) in enumerate(zip(tick_indices, corr_matrices)):
+                            ax = axes[idx]
+                            im = ax.imshow(corr, cmap=cmap_synch, vmin=-1, vmax=1, aspect='auto')
+                            ax.set_title(f'Tick {tick_idx+1}')
+                            ax.axis('off')
+                        
+                        for idx in range(n_corr_panels, len(axes)):
+                            axes[idx].axis('off')
+                        
+                        fig.suptitle('Neuron Correlation Matrix Evolution\n(Positive=co-activate, Negative=anti-correlated)', fontsize=12)
+                        fig.tight_layout(pad=0.1)
+                        fig.savefig(f'{args.output_dir}/synch_correlation_evolution.png', dpi=200)
+                        fig.savefig(f'{args.output_dir}/synch_correlation_evolution.pdf', dpi=200)
+                        plt.close(fig)
+
+                        # Option 3: GIF of correlation matrix evolution
+                        if args.save_synch_gif:
+                            print("Creating synchronization GIF...")
+                            frames_synch = []
+                            # Use first 30 ticks for GIF (or all if fewer)
+                            gif_ticks = list(range(min(30, len(corr_matrices))))
+                            
+                            for frame_idx in tqdm(gif_ticks, desc="Creating synch GIF"):
+                                fig, ax = plt.subplots(figsize=(6, 5))
+                                corr = corr_matrices[frame_idx]
+                                im = ax.imshow(corr, cmap=cmap_synch, vmin=-1, vmax=1, aspect='auto')
+                                ax.set_title(f'Tick {tick_indices[frame_idx]+1} - Neuron Correlation', fontsize=14)
+                                ax.set_xlabel('Neuron index')
+                                ax.set_ylabel('Neuron index')
+                                plt.colorbar(im, ax=ax, label='Correlation')
+                                
+                                # Add annotations for key phases
+                                tick_num = tick_indices[frame_idx]
+                                if tick_num < 5:
+                                    phase_text = "Phase: Initial Snap\n(System 1 intuition)"
+                                elif tick_num < 15:
+                                    phase_text = "Phase: Thinking Crisis\n(Conflicting signals)"
+                                elif tick_num < 30:
+                                    phase_text = "Phase: Resolution\n(Consensus reached)"
+                                else:
+                                    phase_text = f"Tick {tick_num+1}"
+                                ax.text(0.02, 0.98, phase_text, transform=ax.transAxes, 
+                                       fontsize=10, verticalalignment='top',
+                                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                                
+                                fig.tight_layout()
+                                
+                                # Render to numpy
+                                canvas = fig.canvas
+                                canvas.draw()
+                                img = np.frombuffer(canvas.buffer_rgba(), dtype=np.uint8)
+                                img = img.reshape(canvas.get_width_height()[::-1] + (4,))[:, :, :3]
+                                frames_synch.append(img)
+                                plt.close(fig)
+                            
+                            # Save GIF
+                            gif_path = f'{args.output_dir}/synch_correlation_evolution.gif'
+                            imageio.mimsave(gif_path, frames_synch, fps=2, loop=0)
+                            print(f"Saved GIF to {gif_path}")
+
+                        # Summary statistics
+                        print(f"\nSynchronization Matrix Analysis:")
+                        print(f"  Number of neurons: {n_neurons}")
+                        print(f"  Ticks analyzed: {len(tick_indices)}")
+                        if corr_matrices:
+                            # Compute diagonal vs off-diagonal ratio
+                            diag_mean = []
+                            off_diag_mean = []
+                            for corr in corr_matrices:
+                                d = np.diag(corr)
+                                mask = ~np.eye(corr.shape[0], dtype=bool)
+                                diag_mean.append(d.mean())
+                                off_diag_mean.append(corr[mask].mean())
+                            print(f"  Avg diagonal (self-correlation): {np.mean(diag_mean):.3f}")
+                            print(f"  Avg off-diagonal (cross-correlation): {np.mean(off_diag_mean):.3f}")
+
     if 'videos' in args.actions:
         if not args.data_indices: # If list is empty
             n_samples = len(validation_dataset)
