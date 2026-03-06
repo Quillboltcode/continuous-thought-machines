@@ -601,17 +601,35 @@ if __name__=='__main__':
                             # Subsample neurons for cleaner visualization
                             n_show = min(64, acts.shape[1])
                             acts_sub = acts[:, :n_show]
-                            # Compute correlation matrix
+                            # Compute correlation matrix using covariance
                             try:
                                 if acts_sub.shape[0] > 1:
+                                    # Standard correlation: (N, N)
                                     corr = np.corrcoef(acts_sub.T)
                                     # Handle NaN values if no variance
                                     corr = np.nan_to_num(corr, nan=0.0)
                                 else:
-                                    corr = np.outer(acts_sub[0], acts_sub[0])
-                            except Exception:
+                                    # Single sample: compute pseudo-correlation from activations
+                                    # Normalize by std to get correlation-like values
+                                    act_mean = acts_sub.mean(axis=0, keepdims=True)
+                                    act_std = acts_sub.std(axis=0, keepdims=True)
+                                    act_std[act_std == 0] = 1  # Avoid division by zero
+                                    acts_normalized = (acts_sub - act_mean) / act_std
+                                    # Use outer product of normalized activations
+                                    corr = np.dot(acts_normalized.T, acts_normalized) / acts_sub.shape[0]
+                            except Exception as e:
                                 # Fallback: identity matrix
                                 corr = np.eye(n_show)
+                            
+                            # Ensure corr is 2D
+                            if corr.ndim == 0:
+                                corr = np.array([[corr.item()]])
+                            elif corr.ndim == 1:
+                                corr = corr.reshape(1, -1)
+                            elif corr.shape[0] != corr.shape[1] and corr.shape[0] == 1:
+                                # Got 1xN, make it NxN
+                                corr = np.dot(corr.T, corr)
+                            
                             corr_matrices.append(corr)
                         
                         # Create multi-panel correlation plot
