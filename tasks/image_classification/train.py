@@ -106,6 +106,12 @@ def parse_args():
         default=False,
         help="Use grayscale images.",
     )
+    parser.add_argument(
+        "--convert_grayscale_to_rgb",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Convert grayscale images to 3-channel RGB by duplicating.",
+    )
     # CTM / LSTM specific
     parser.add_argument(
         "--d_input", type=int, default=128, help="Dimension of the input (CTM, LSTM)."
@@ -407,7 +413,7 @@ def parse_args():
 
 
 def get_dataset(
-    dataset, root, val_split_ratio=0.0, use_test_as_val=False, grayscale=False
+    dataset, root, val_split_ratio=0.0, use_test_as_val=False, grayscale=False, convert_grayscale_to_rgb=False
 ):
     if dataset == "imagenet":
         dataset_mean = [0.485, 0.456, 0.406]
@@ -516,7 +522,7 @@ def get_dataset(
         idx_order = np.argsort(np.array(list(train_data.class_to_idx.values())))
         class_labels = list(np.array(list(train_data.class_to_idx.keys()))[idx_order])
     elif dataset == "FerPlusPlus":
-        if grayscale:
+        if grayscale and not convert_grayscale_to_rgb:
             dataset_mean = [0.5]
             dataset_std = [0.5]
         else:
@@ -524,7 +530,7 @@ def get_dataset(
             dataset_std = [0.229, 0.224, 0.225]
         normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
 
-        if grayscale:
+        if grayscale and not convert_grayscale_to_rgb:
             train_transform = transforms.Compose(
                 [
                     transforms.Resize((100, 100)),
@@ -538,6 +544,24 @@ def get_dataset(
                 [
                     transforms.Resize((100, 100)),
                     transforms.Grayscale(num_output_channels=1),
+                    transforms.ToTensor(),
+                    normalize,
+                ]
+            )
+        elif convert_grayscale_to_rgb:
+            train_transform = transforms.Compose(
+                [
+                    transforms.Resize((100, 100)),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.Grayscale(num_output_channels=3),
+                    transforms.ToTensor(),
+                    normalize,
+                ]
+            )
+            test_transform = transforms.Compose(
+                [
+                    transforms.Resize((100, 100)),
+                    transforms.Grayscale(num_output_channels=3),
                     transforms.ToTensor(),
                     normalize,
                 ]
@@ -686,6 +710,7 @@ if __name__ == "__main__":
             args.val_split_ratio,
             args.use_test_as_val,
             args.grayscale,
+            args.convert_grayscale_to_rgb,
         )
     )
 
@@ -840,7 +865,10 @@ if __name__ == "__main__":
 
     # Compute and log FLOPs
     if args.model in ["ctm", "ctm_gated"]:
-        input_channels = 1 if args.grayscale else 3
+        if args.grayscale and not args.convert_grayscale_to_rgb:
+            input_channels = 1
+        else:
+            input_channels = 3
         input_shape = (
             (input_channels, 224, 224)
             if args.dataset == "imagenet"
