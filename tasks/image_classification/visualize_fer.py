@@ -23,7 +23,27 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_transforms(grayscale, convert_grayscale_to_rgb, split="train"):
+def get_base_transforms(grayscale, convert_grayscale_to_rgb):
+    if convert_grayscale_to_rgb:
+        return transforms.Compose([
+            transforms.Resize((100, 100)),
+            transforms.Grayscale(num_output_channels=3),
+            transforms.ToTensor(),
+        ])
+    elif grayscale:
+        return transforms.Compose([
+            transforms.Resize((100, 100)),
+            transforms.Grayscale(num_output_channels=1),
+            transforms.ToTensor(),
+        ])
+    else:
+        return transforms.Compose([
+            transforms.Resize((100, 100)),
+            transforms.ToTensor(),
+        ])
+
+
+def get_full_transforms(grayscale, convert_grayscale_to_rgb):
     if grayscale and not convert_grayscale_to_rgb:
         dataset_mean = [0.5]
         dataset_std = [0.5]
@@ -34,27 +54,32 @@ def get_transforms(grayscale, convert_grayscale_to_rgb, split="train"):
     normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
     
     if grayscale and not convert_grayscale_to_rgb:
-        transform = transforms.Compose([
+        return transforms.Compose([
             transforms.Resize((100, 100)),
             transforms.Grayscale(num_output_channels=1),
             transforms.ToTensor(),
             normalize,
         ])
     elif convert_grayscale_to_rgb:
-        transform = transforms.Compose([
+        return transforms.Compose([
             transforms.Resize((100, 100)),
             transforms.Grayscale(num_output_channels=3),
             transforms.ToTensor(),
             normalize,
         ])
     else:
-        transform = transforms.Compose([
+        return transforms.Compose([
             transforms.Resize((100, 100)),
             transforms.ToTensor(),
             normalize,
         ])
-    
-    return transform
+
+
+def get_normalize_params(grayscale, convert_grayscale_to_rgb):
+    if grayscale and not convert_grayscale_to_rgb:
+        return [0.5], [0.5]
+    else:
+        return [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
 
 
 def denormalize(tensor, mean, std):
@@ -63,46 +88,56 @@ def denormalize(tensor, mean, std):
     return tensor * std + mean
 
 
-def visualize_samples(data_root, split, grayscale, convert_grayscale_to_rgb, num_samples, seed):
+def visualize_comparison(data_root, split, grayscale, convert_grayscale_to_rgb, num_samples, seed):
     random.seed(seed)
     torch.manual_seed(seed)
     
-    transform = get_transforms(grayscale, convert_grayscale_to_rgb, split)
+    base_transform = get_base_transforms(grayscale, convert_grayscale_to_rgb)
+    full_transform = get_full_transforms(grayscale, convert_grayscale_to_rgb)
+    mean, std = get_normalize_params(grayscale, convert_grayscale_to_rgb)
     
-    dataset = datasets.ImageFolder(os.path.join(data_root, split), transform=transform)
+    base_dataset = datasets.ImageFolder(os.path.join(data_root, split), transform=base_transform)
+    norm_dataset = datasets.ImageFolder(os.path.join(data_root, split), transform=full_transform)
     
-    if convert_grayscale_to_rgb:
-        dataset_mean = [0.485, 0.456, 0.406]
-        dataset_std = [0.229, 0.224, 0.225]
-    else:
-        dataset_mean = [0.5]
-        dataset_std = [0.5]
+    indices = random.sample(range(len(base_dataset)), min(num_samples, len(base_dataset)))
     
-    indices = random.sample(range(len(dataset)), min(num_samples, len(dataset)))
+    figures = []
     
-    fig, axes = plt.subplots(4, 4, figsize=(12, 12))
-    axes = axes.flatten()
-    
-    for idx, ax in zip(indices, axes):
-        img, label = dataset[idx]
+    for i, idx in enumerate(indices):
+        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
         
-        img_denorm = denormalize(img, dataset_mean, dataset_std)
+        img_base, label = base_dataset[idx]
+        img_norm, _ = norm_dataset[idx]
+        
+        img_denorm = denormalize(img_norm, mean, std)
         img_denorm = torch.clamp(img_denorm, 0, 1)
         
-        if img_denorm.shape[0] == 1:
-            img_denorm = img_denorm.squeeze(0)
-            ax.imshow(img_denorm, cmap="gray")
+        if img_base.shape[0] == 1:
+            img_base_vis = img_base.squeeze(0)
+            axes[0].imshow(img_base_vis, cmap="gray")
         else:
-            img_denorm = img_denorm.permute(1, 2, 0).numpy()
-            ax.imshow(img_denorm)
+            img_base_vis = img_base.permute(1, 2, 0).numpy()
+            axes[0].imshow(img_base_vis)
         
-        ax.set_title(f"Label: {FER_PLUS_PLUS_CLASSES[label]}", fontsize=10)
-        ax.axis("off")
+        axes[0].set_title("Before Normalize", fontsize=12)
+        axes[0].axis("off")
+        
+        if img_denorm.shape[0] == 1:
+            img_denorm_vis = img_denorm.squeeze(0)
+            axes[1].imshow(img_denorm_vis, cmap="gray")
+        else:
+            img_denorm_vis = img_denorm.permute(1, 2, 0).numpy()
+            axes[1].imshow(img_denorm_vis)
+        
+        axes[1].set_title("After Normalize", fontsize=12)
+        axes[1].axis("off")
+        
+        fig.suptitle(f"Sample {i+1}: {FER_PLUS_PLUS_CLASSES[label]}", fontsize=14, fontweight="bold")
+        plt.tight_layout()
+        
+        figures.append(fig)
     
-    plt.suptitle(f"Fer++ {split.upper()} - After Transform\n(convert_grayscale_to_rgb={convert_grayscale_to_rgb}, grayscale={grayscale})", fontsize=14)
-    plt.tight_layout()
-    
-    return fig, indices, dataset, FER_PLUS_PLUS_CLASSES
+    return figures, indices, base_dataset, FER_PLUS_PLUS_CLASSES
 
 
 def main():
@@ -111,7 +146,7 @@ def main():
     if args.log_to_wandb:
         wandb.init(
             project="fer-visualization",
-            name=f"fer_visualize_{args.split}_rgb_conv={args.convert_grayscale_to_rgb}",
+            name=f"fer_comparison_{args.split}_rgb_conv={args.convert_grayscale_to_rgb}",
             reinit=True,
         )
     
@@ -121,7 +156,7 @@ def main():
     print(f"  - convert_grayscale_to_rgb: {args.convert_grayscale_to_rgb}")
     print(f"  - num_samples: {args.num_samples}")
     
-    fig, indices, dataset, class_names = visualize_samples(
+    figures, indices, dataset, class_names = visualize_comparison(
         args.data_root,
         args.split,
         args.grayscale,
@@ -130,35 +165,43 @@ def main():
         args.seed,
     )
     
+    output_dir = "visualizations"
+    os.makedirs(output_dir, exist_ok=True)
+    
     if args.log_to_wandb:
-        wandb.log({"fer_transformed_samples": wandb.Image(fig)})
+        for i, fig in enumerate(figures):
+            _, label = dataset[indices[i]]
+            wandb.log({f"sample_{i+1}_before_after": wandb.Image(fig)})
+        
         wandb.log({
             "metadata": {
                 "split": args.split,
                 "grayscale": args.grayscale,
                 "convert_grayscale_to_rgb": args.convert_grayscale_to_rgb,
-                "num_samples": len(indices),
+                "num_samples": len(figures),
                 "seed": args.seed,
                 "class_names": class_names,
             }
         })
         
-        for i, idx in enumerate(indices):
-            img, label = dataset[idx]
-            wandb.log({f"sample_{i}_label": class_names[label]})
-    
-    output_dir = "visualizations"
-    os.makedirs(output_dir, exist_ok=True)
-    filename = f"fer_{args.split}_rgb_conv={args.convert_grayscale_to_rgb}.png"
-    fig.savefig(os.path.join(output_dir, filename), dpi=150, bbox_inches="tight")
-    print(f"Saved visualization to {output_dir}/{filename}")
-    
-    if args.log_to_wandb:
-        artifact = wandb.Artifact("fer-transformed-samples", type="visualization")
-        artifact.add_file(os.path.join(output_dir, filename))
+        artifact = wandb.Artifact("fer-normalize-comparison", type="visualization")
+        
+        for i, fig in enumerate(figures):
+            filename = f"fer_sample_{i+1}_comparison.png"
+            fig.savefig(os.path.join(output_dir, filename), dpi=150, bbox_inches="tight")
+            artifact.add_file(os.path.join(output_dir, filename))
+        
         wandb.log_artifact(artifact)
+        print(f"Logged {len(figures)} figures to wandb")
+    else:
+        for i, fig in enumerate(figures):
+            filename = f"fer_sample_{i+1}_comparison.png"
+            fig.savefig(os.path.join(output_dir, filename), dpi=150, bbox_inches="tight")
     
-    plt.close(fig)
+    print(f"Saved {len(figures)} figures to {output_dir}/")
+    
+    for fig in figures:
+        plt.close(fig)
 
 
 if __name__ == "__main__":
