@@ -31,6 +31,7 @@ from utils.housekeeping import set_seed, zip_python_code
 from models.utils import PonderNetLoss as PonderLoss
 from models.utils import compute_ctm_flops, count_parameters
 from utils.losses import image_classification_loss  # Used by CTM, LSTM
+from utils.dataset_utils import compute_dataset_stats, compute_class_distribution, log_class_histogram_wandb
 from utils.schedulers import WarmupCosineAnnealingLR, WarmupMultiStepLR, warmup
 
 from autoclip.torch import QuantileClip
@@ -670,6 +671,59 @@ def get_dataset(
             "Anger",
             "Neutral",
         ]
+    elif dataset == "affectnet":
+        train_transform_no_norm = transforms.Compose([
+            transforms.Resize((112, 112)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+        ])
+        temp_train_data = datasets.ImageFolder(os.path.join(root, "train"), transform=train_transform_no_norm)
+        
+        print("[INFO] Computing dataset mean and std from training set...")
+        dataset_mean, dataset_std = compute_dataset_stats(temp_train_data)
+        print(f"[INFO] AffectNet computed stats - mean: {dataset_mean}, std: {dataset_std}")
+        
+        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
+        
+        train_transform = transforms.Compose([
+            transforms.Resize((112, 112)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        test_transform = transforms.Compose([
+            transforms.Resize((112, 112)),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        
+        train_data = datasets.ImageFolder(os.path.join(root, "train"), transform=train_transform)
+        val_data = datasets.ImageFolder(os.path.join(root, "val"), transform=test_transform)
+        test_data = datasets.ImageFolder(os.path.join(root, "test"), transform=test_transform) if os.path.exists(os.path.join(root, "test")) else None
+        
+        affectnet_idx_to_label = {
+            0: "Neutral",
+            1: "Happy",
+            2: "Sad",
+            3: "Surprise",
+            4: "Fear",
+            5: "Disgust",
+            6: "Anger",
+            7: "Contempt",
+        }
+        
+        class_labels = [affectnet_idx_to_label[i] for i in sorted(train_data.classes)]
+        
+        class_labels = [
+            "Neutral",
+            "Happy",
+            "Sad",
+            "Surprise",
+            "Fear",
+            "Disgust",
+            "Anger",
+            "Contempt",
+        ]
     else:
         raise NotImplementedError
 
@@ -698,8 +752,9 @@ if __name__ == "__main__":
         "imagenet",
         "RAFDB",
         "FerPlusPlus",
+        "affectnet",
     ], (
-        f"Need to be one of cifar10, cifar100, imagenet, RAFDB, FerPlusPlus, got {args.dataset}"
+        f"Need to be one of cifar10, cifar100, imagenet, RAFDB, FerPlusPlus, affectnet, got {args.dataset}"
     )
 
     # Data
@@ -713,6 +768,19 @@ if __name__ == "__main__":
             args.convert_grayscale_to_rgb,
         )
     )
+
+    # Log class distribution to wandb
+    train_class_dist = compute_class_distribution(train_data)
+    print(f"[INFO] Train class distribution: {dict(train_class_dist)}")
+    log_class_histogram_wandb(train_class_dist, class_labels, split="train")
+    if val_data is not None:
+        val_class_dist = compute_class_distribution(val_data)
+        print(f"[INFO] Val class distribution: {dict(val_class_dist)}")
+        log_class_histogram_wandb(val_class_dist, class_labels, split="val")
+    if test_data is not None:
+        test_class_dist = compute_class_distribution(test_data)
+        print(f"[INFO] Test class distribution: {dict(test_class_dist)}")
+        log_class_histogram_wandb(test_class_dist, class_labels, split="test")
 
     first_sample, first_label = train_data[0]
     print(f"[DEBUG] First sample shape: {first_sample.shape}, mean: {first_sample.mean().item():.4f}, label: {first_label}")

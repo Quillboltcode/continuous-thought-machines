@@ -15,6 +15,7 @@ from torchvision import models
 from torch.utils.data import DataLoader, random_split
 from utils.housekeeping import set_seed, zip_python_code
 from utils.schedulers import WarmupCosineAnnealingLR, WarmupMultiStepLR, warmup
+from utils.dataset_utils import compute_dataset_stats
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -160,6 +161,52 @@ def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False, grays
                 train_data, [train_size, val_size],
                 generator=torch.Generator().manual_seed(412),
             )
+    elif dataset == "affectnet":
+        train_transform_no_norm = transforms.Compose([
+            transforms.Resize((112, 112)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+        ])
+        temp_train_data = datasets.ImageFolder(os.path.join(root, "train"), transform=train_transform_no_norm)
+        
+        print("[INFO] Computing dataset mean and std from training set...")
+        dataset_mean, dataset_std = compute_dataset_stats(temp_train_data)
+        print(f"[INFO] AffectNet computed stats - mean: {dataset_mean}, std: {dataset_std}")
+        
+        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
+        
+        train_transform = transforms.Compose([
+            transforms.Resize((112, 112)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        test_transform = transforms.Compose([
+            transforms.Resize((112, 112)),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        
+        train_data = datasets.ImageFolder(os.path.join(root, "train"), transform=train_transform)
+        val_data = datasets.ImageFolder(os.path.join(root, "val"), transform=test_transform)
+        test_data = datasets.ImageFolder(os.path.join(root, "test"), transform=test_transform) if os.path.exists(os.path.join(root, "test")) else None
+        
+        affectnet_idx_to_label = {
+            0: "Neutral",
+            1: "Happy",
+            2: "Sad",
+            3: "Surprise",
+            4: "Fear",
+            5: "Disgust",
+            6: "Anger",
+            7: "Contempt",
+        }
+        
+        class_labels = [affectnet_idx_to_label[i] for i in sorted(train_data.classes)]
+        
+        if use_test_as_val:
+            val_data = test_data
+            test_data = None
     else:
         raise NotImplementedError(f"Dataset {dataset} not supported")
 
@@ -194,6 +241,10 @@ if __name__ == "__main__":
     trainloader = DataLoader(
         train_data, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers_train
     )
+
+    steps_per_epoch = len(trainloader)
+    total_epochs = args.training_iterations / steps_per_epoch
+    print(f"Training: {args.training_iterations} iterations, {steps_per_epoch} steps/epoch, ~{total_epochs:.2f} epochs equivalent")
 
     if val_data is not None:
         valloader = DataLoader(val_data, batch_size=args.batch_size_test, shuffle=False, num_workers=1)
