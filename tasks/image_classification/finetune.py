@@ -192,17 +192,17 @@ def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False, grays
         test_data = datasets.ImageFolder(os.path.join(root, "test"), transform=test_transform) if os.path.exists(os.path.join(root, "test")) else None
         
         affectnet_idx_to_label = {
-            0: "Neutral",
-            1: "Happy",
-            2: "Sad",
-            3: "Surprise",
-            4: "Fear",
-            5: "Disgust",
-            6: "Anger",
-            7: "Contempt",
+            "0": "Neutral",
+            "1": "Happy",
+            "2": "Sad",
+            "3": "Surprise",
+            "4": "Fear",
+            "5": "Disgust",
+            "6": "Anger",
+            "7": "Contempt",
         }
         
-        class_labels = [affectnet_idx_to_label[i] for i in sorted(train_data.classes)]
+        class_labels = [affectnet_idx_to_label[i] for i in train_data.classes]
         
         if use_test_as_val:
             val_data = test_data
