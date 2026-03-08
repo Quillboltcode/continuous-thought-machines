@@ -69,8 +69,5 @@ def log_class_histogram_wandb(class_counts, class_names, split="train"):
     sorted_counts = {class_names[k]: class_counts.get(k, 0) for k in sorted(class_counts.keys())}
     
     wandb.log({
-        f"class_distribution/{split}": wandb.Histogram(
-            [f"{k}: {v}" for k, v in sorted_counts.items()]
-        ),
         f"class_counts/{split}": sorted_counts,
     })
