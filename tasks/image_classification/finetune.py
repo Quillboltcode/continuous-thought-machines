@@ -61,6 +61,7 @@ def parse_args():
     parser.add_argument("--val_split_ratio", type=float, default=0.1, help="Ratio of training data to use for validation (0.0-1.0).")
     parser.add_argument("--use_test_as_val", action="store_true", default=False, help="Use test set as validation.")
     parser.add_argument("--final_test_eval", action="store_true", default=False, help="Run final evaluation on test set after training.")
+    parser.add_argument("--early_stopping_patience", type=int, default=-1, help="Early stopping patience (epochs without improvement). Set to -1 to disable.")
 
     args = parser.parse_args()
     return args
@@ -286,6 +287,7 @@ if __name__ == "__main__":
     iters = []
     best_val_acc = 0.0
     best_checkpoint_path = f"{args.log_dir}/best_checkpoint.pt"
+    epochs_without_improvement = 0
 
     start_iter = 0
     if args.reload:
@@ -407,8 +409,15 @@ if __name__ == "__main__":
                     }
                     torch.save(best_checkpoint, best_checkpoint_path)
                     print(f"Saved best checkpoint with val_acc={best_val_acc:.4f} at iteration {bi + 1}")
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement += 1
 
                 model.train()
+
+                if args.early_stopping_patience > 0 and epochs_without_improvement >= args.early_stopping_patience:
+                    print(f"Early stopping triggered at iteration {bi + 1} - no improvement for {epochs_without_improvement} evaluations")
+                    break
 
             if bi % args.save_every == 0 and bi > 0:
                 checkpoint = {
