@@ -419,6 +419,7 @@ def parse_args():
 def get_dataset(
     dataset, root, val_split_ratio=0.0, use_test_as_val=False, grayscale=False, convert_grayscale_to_rgb=False, img_size=100
 ):
+    dataset = dataset.lower()
     if dataset == "imagenet":
         dataset_mean = [0.485, 0.456, 0.406]
         dataset_std = [0.229, 0.224, 0.225]
