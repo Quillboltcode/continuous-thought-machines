@@ -1609,7 +1609,7 @@ if __name__ == "__main__":
                                         all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
 
                                 elif args.model == "ctm_gated":
-                                   these_predictions, certainties, _, these_exit_steps, _ = model(inputs, use_early_exit=False)
+                                    these_predictions, certainties, _, these_exit_steps, _ = model(inputs, use_early_exit=False)
 
                                     loss, where_most_certain = ctm_gated_loss(
                                         these_predictions, certainties, targets, these_exit_steps
