@@ -60,7 +60,7 @@ class TestEarlyExitFunctionality:
         model.eval()
 
         with torch.no_grad():
-            predictions, certainties, synch_out, exit_steps = model(sample_input, use_early_exit=True)
+            predictions, certainties, synch_out, exit_steps, activated_states = model(sample_input, use_early_exit=True)
 
         max_iterations = base_gated_params['iterations']
         
@@ -94,10 +94,10 @@ class TestEarlyExitFunctionality:
             beta=0.01,
             min_steps=3,
         ).to(device)
-        model.eval()
+        model.train()
 
         with torch.no_grad():
-            predictions, certainties, synch_out, exit_steps = model(sample_input, use_early_exit=True)
+            predictions, certainties, synch_out, exit_steps, activated_states = model(sample_input, use_early_exit=True)
 
         max_iterations = base_gated_params['iterations']
         
@@ -128,7 +128,7 @@ class TestEarlyExitFunctionality:
         model.eval()
 
         with torch.no_grad():
-            predictions, certainties, synch_out, exit_steps = model(sample_input, use_early_exit=True)
+            predictions, certainties, synch_out, exit_steps, activated_states = model(sample_input, use_early_exit=True)
 
         max_iterations = base_gated_params['iterations']
         
@@ -161,10 +161,10 @@ class TestEarlyExitFunctionality:
             use_halt_logits=True,
             min_steps=5,
         ).to(device)
-        model.eval()
+        model.train()
 
         with torch.no_grad():
-            predictions, certainties, synch_out, exit_steps = model(sample_input, use_early_exit=True)
+            predictions, certainties, synch_out, exit_steps, activated_states = model(sample_input, use_early_exit=True)
 
         max_iterations = base_gated_params['iterations']
         
@@ -194,7 +194,7 @@ class TestEarlyExitFunctionality:
         model.eval()
 
         with torch.no_grad():
-            predictions, certainties, synch_out, exit_steps = model(sample_input, use_early_exit=True)
+            predictions, certainties, synch_out, exit_steps, activated_states = model(sample_input, use_early_exit=True)
 
         max_iterations = base_gated_params['iterations']
         
@@ -216,7 +216,7 @@ class TestEarlyExitFunctionality:
         model.eval()
 
         with torch.no_grad():
-            predictions, certainties, synch_out, exit_steps = model(sample_input, use_early_exit=False)
+            predictions, certainties, synch_out, exit_steps, activated_states = model(sample_input, use_early_exit=False)
 
         max_iterations = base_gated_params['iterations']
         
@@ -238,7 +238,7 @@ class TestEarlyExitFunctionality:
         model.eval()
 
         with torch.no_grad():
-            predictions, certainties, synch_out, exit_steps = model(sample_input, use_early_exit=True)
+            predictions, certainties, synch_out, exit_steps, activated_states = model(sample_input, use_early_exit=True)
 
         # No sample should exit before min_steps
         assert torch.all(exit_steps >= min_steps), (
@@ -256,7 +256,7 @@ class TestEarlyExitShapeAndConsistency:
             exit_strategy='certainty',
         ).to(device)
 
-        predictions, certainties, synch_out, exit_steps = model(sample_input)
+        predictions, certainties, synch_out, exit_steps, activated_states = model(sample_input)
 
         batch_size = sample_input.size(0)
         assert exit_steps.shape == (batch_size,), (
@@ -270,7 +270,7 @@ class TestEarlyExitShapeAndConsistency:
             exit_strategy='certainty',
         ).to(device)
 
-        predictions, certainties, synch_out, exit_steps = model(sample_input)
+        predictions, certainties, synch_out, exit_steps, activated_states = model(sample_input)
 
         batch_size = sample_input.size(0)
         out_dims = base_gated_params['out_dims']
@@ -289,13 +289,13 @@ class TestEarlyExitShapeAndConsistency:
             lambda_p=0.2,
             min_steps=1,
         ).to(device)
-        model.eval()
+        model.train()
 
         # Run multiple times to get variety in exit steps
         all_same_count = 0
         for _ in range(5):
             with torch.no_grad():
-                predictions, certainties, synch_out, exit_steps = model(sample_input, use_early_exit=True)
+                predictions, certainties, synch_out, exit_steps, activated_states = model(sample_input, use_early_exit=True)
             
             # Check if all samples in this batch exited at the same step
             if torch.all(exit_steps == exit_steps[0]):
@@ -330,7 +330,10 @@ class TestEarlyExitStatistics:
             kwargs['min_steps'] = 1
 
         model = CTMGated(**base_gated_params, **kwargs).to(device)
-        model.eval()
+        if exit_strategy in ('ponder', 'learned', 'normal'):
+            model.train() # Enable stochasticity
+        else:
+            model.eval()
 
         # Run multiple times with different random inputs to collect statistics
         exit_step_counts = []
@@ -340,7 +343,7 @@ class TestEarlyExitStatistics:
             # Generate new random input each iteration
             test_input = torch.randint(0, 2, (batch_size, parity_length), dtype=torch.float32, device=device) * 2 - 1
             with torch.no_grad():
-                _, _, _, exit_steps = model(test_input, use_early_exit=True)
+                _, _, _, exit_steps, _ = model(test_input, use_early_exit=True)
             exit_step_counts.extend(exit_steps.cpu().tolist())
 
         max_iterations = base_gated_params['iterations']

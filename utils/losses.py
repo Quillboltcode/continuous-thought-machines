@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional
 
 
 def compute_ctc_loss(predictions, targets, blank_label=0):
@@ -196,3 +197,255 @@ def qamnist_loss(predictions, certainties, targets, use_most_certain=True):
 
     loss = (loss_minimum_ce + loss_selected)/2
     return loss, loss_index_2
+
+
+class PonderLoss(nn.Module):
+    """
+    PonderNet loss with geometric prior regularization.
+    
+    From: "PonderNet: Learning to Ponder" (Banino et al., 2021)
+    https://arxiv.org/abs/2107.05407
+    
+    Loss = ReconstructionLoss + beta * KL(p_halt || geometric_prior)
+    
+    The geometric prior encourages the model to halt after approximately 1/lambda_p steps.
+    """
+    def __init__(self, lambda_p: float = 0.2, beta: float = 0.01, max_steps: int = 10):
+        """
+        Args:
+            lambda_p: Parameter for geometric prior (expected steps = 1/lambda_p)
+            beta: Weight for regularization term
+            max_steps: Maximum number of pondering steps (truncation point)
+        """
+        super().__init__()
+        self.beta = beta
+        self.lambda_p = lambda_p
+        self.max_steps = max_steps
+        
+        steps = torch.arange(1, max_steps + 1, dtype=torch.float32)
+        prior = (1 - lambda_p) ** (steps - 1) * lambda_p
+        self.prior = prior / prior.sum()
+        
+    def forward(self, predictions: torch.Tensor, targets: torch.Tensor, halt_probs: Optional[torch.Tensor] = None):
+        """
+        Args:
+            predictions: Predictions [batch_size, num_classes, max_steps]
+            targets: Targets [batch_size]
+            halt_probs: Halt probabilities [batch_size, max_steps] - if None, uses uniform
+            
+        Returns:
+            total_loss, recon_loss, reg_loss
+        """
+        if predictions.dim() == 3:
+            predictions = predictions.permute(0, 2, 1)  # [B, T, C]
+        
+        B, T, C = predictions.shape
+        
+        if halt_probs is None:
+            p = torch.ones(T, B, device=predictions.device) / T
+        else:
+            p = halt_probs.T  # [T, B]
+        
+        recon_loss = torch.tensor(0., device=predictions.device)
+        for t in range(T):
+            step_loss = F.cross_entropy(predictions[:, t, :], targets, reduction='mean')
+            recon_loss = recon_loss + (p[t] * step_loss)
+        
+        prior = self.prior[:T].unsqueeze(1).expand(-1, B)
+        
+        p_normalized = p / (p.sum(dim=0, keepdim=True) + 1e-8)
+        reg_loss = (p_normalized * torch.log(p_normalized / (prior + 1e-10) + 1e-10)).sum(dim=0).mean()
+        
+        total_loss = recon_loss + self.beta * reg_loss
+        
+        return total_loss, recon_loss.detach(), reg_loss.detach()
+
+
+class LoopLMLoss(nn.Module):
+    """
+    LoopLM loss with uniform prior (entropy regularization).
+    
+    From: "Scaling Latent Reasoning via Looped Language Models" (Li et al., 2025)
+    https://arxiv.org/abs/2502.10048
+    
+    Loss = E_p[L_step] + beta * KL(p || uniform) 
+         = E_p[L_step] + beta * (log T_max - H(p))
+    
+    The uniform prior encourages the model to distribute reasoning steps evenly.
+    """
+    def __init__(self, beta: float = 0.01, max_steps: int = 4):
+        """
+        Args:
+            beta: Weight for entropy regularization
+            max_steps: Maximum number of recurrent steps (T_max)
+        """
+        super().__init__()
+        self.beta = beta
+        self.max_steps = max_steps
+        self.log_uniform = torch.log(torch.tensor(max_steps, dtype=torch.float32))
+        
+    def forward(self, predictions: torch.Tensor, targets: torch.Tensor, halt_probs: Optional[torch.Tensor] = None):
+        """
+        Args:
+            predictions: Predictions [batch_size, num_classes, max_steps]
+            targets: Targets [batch_size]
+            halt_probs: Halt probabilities [batch_size, max_steps] - if None, uses uniform
+            
+        Returns:
+            total_loss, expected_loss, entropy_bonus
+        """
+        if predictions.dim() == 3:
+            predictions = predictions.permute(0, 2, 1)  # [B, T, C]
+        
+        B, T, C = predictions.shape
+        
+        if halt_probs is None:
+            p = torch.ones(B, T, device=predictions.device) / T
+        else:
+            p = halt_probs  # [B, T]
+        
+        step_losses = torch.zeros(B, T, device=predictions.device)
+        for t in range(T):
+            step_losses[:, t] = F.cross_entropy(predictions[:, t, :], targets, reduction='none')
+        
+        p_normalized = p / (p.sum(dim=1, keepdim=True) + 1e-10)
+        
+        expected_loss = (p_normalized * step_losses).sum(dim=1)
+        
+        entropy = -(p_normalized * torch.log(p_normalized + 1e-10)).sum(dim=1)
+        kl_uniform = self.log_uniform - entropy
+        
+        total = expected_loss + self.beta * kl_uniform
+        
+        return total.mean(), expected_loss.mean(), entropy.mean()
+
+
+class CTMGatedLoss(nn.Module):
+    """
+    Loss function for CTM-Gated model.
+    
+    Supports multiple loss types:
+    - 'standard': Standard CTM loss using minimum CE + most certain CE
+    - 'ponder': PonderNet-style loss with geometric prior (Banino et al., 2021)
+    - 'loop': LoopLM-style loss with uniform prior (Li et al., 2025)
+    """
+    
+    def __init__(self, loss_type='standard', lambda_p=0.2, beta=0.01, use_most_certain=True, max_steps=10):
+        super().__init__()
+        self.loss_type = loss_type
+        self.lambda_p = lambda_p
+        self.beta = beta
+        self.use_most_certain = use_most_certain
+        self.max_steps = max_steps
+        
+    def forward(self, predictions, certainties, targets, exit_steps=None, halt_probs=None):
+        """
+        Args:
+            predictions: [B, C, T] - model predictions at each step
+            certainties: [B, 2, T] - certainty values (entropy, 1-entropy)
+            targets: [B] - target class indices
+            exit_steps: [B] - step at which each sample exited (for computing halt loss)
+            halt_probs: [B, T] - halting probabilities at each step
+        """
+        if self.loss_type == 'standard':
+            return self._standard_loss(predictions, certainties, targets)
+        elif self.loss_type == 'ponder':
+            return self._ponder_loss(predictions, targets, halt_probs)
+        elif self.loss_type == 'loop':
+            return self._loop_loss(predictions, targets, halt_probs)
+        else:
+            raise ValueError(f"Unknown loss type: {self.loss_type}")
+    
+    def _standard_loss(self, predictions, certainties, targets):
+        """Standard CTM loss: use most certain exit (certainty argmax)"""
+        B = predictions.size(0)
+        T = predictions.size(2)
+        
+        targets_expanded = torch.repeat_interleave(targets.unsqueeze(-1), T, -1)
+        losses = F.cross_entropy(predictions, targets_expanded, reduction='none')
+        
+        exit_index = certainties[:, 1].argmax(-1)
+        
+        if not self.use_most_certain:
+            exit_index[:] = T - 1
+        
+        batch_indexer = torch.arange(B, device=predictions.device)
+        loss = losses[batch_indexer, exit_index].mean()
+
+        return loss, exit_index
+    
+    def _ponder_loss(self, predictions, targets, halt_probs):
+        """
+        PonderNet-style loss with geometric prior.
+        
+        From: "PonderNet: Learning to Ponder" (Banino et al., 2021)
+        
+        Uses soft halt probabilities instead of hard one-hot assignment.
+        """
+        B, C, T = predictions.size()
+        
+        if halt_probs is None:
+            progress = torch.arange(T, device=predictions.device).float() / max(T - 1, 1)
+            base_prob = self.lambda_p * torch.ones(T, device=predictions.device)
+            base_prob = base_prob.unsqueeze(0).expand(B, -1)
+            
+            ones = torch.ones(B, 1, device=predictions.device)
+            cum_not_halted = torch.cumprod(torch.cat((ones, 1.0 - base_prob[:, :-1]), dim=1), dim=1)
+            p_t = base_prob * cum_not_halted
+            p_t[:, -1] = 1.0 - p_t[:, :-1].sum(dim=1)
+        else:
+            p_t = halt_probs
+        
+        targets_expanded = targets.unsqueeze(1).expand(-1, T)
+        ce_per_step = F.cross_entropy(predictions, targets_expanded, reduction='none')
+        
+        ones = torch.ones(B, 1, device=predictions.device)
+        cum_not_halted = torch.cumprod(torch.cat((ones, 1.0 - p_t[:, :-1]), dim=1), dim=1)
+        weighted_loss = p_t * cum_not_halted * ce_per_step
+        loss_rec = weighted_loss.sum(dim=1).mean()
+        
+        steps = torch.arange(1, T + 1, device=predictions.device).float()
+        geo_prior = torch.pow(1 - self.lambda_p, steps - 1) * self.lambda_p
+        geo_prior = geo_prior / geo_prior.sum()
+        
+        p_normalized = p_t / (p_t.sum(dim=1, keepdim=True) + 1e-8)
+        geo_prior_expanded = geo_prior.unsqueeze(0).expand(B, -1)
+        kl_div = (p_normalized * (torch.log(p_normalized + 1e-8) - torch.log(geo_prior_expanded + 1e-8))).sum(dim=1).mean()
+        
+        total_loss = loss_rec + self.beta * kl_div
+        
+        exit_steps = p_t.argmax(dim=1) if halt_probs is not None else torch.full((B,), T - 1, dtype=torch.long, device=predictions.device)
+        
+        return total_loss, exit_steps
+    
+    def _loop_loss(self, predictions, targets, halt_probs):
+        """
+        LoopLM-style loss with uniform prior.
+        
+        From: "Scaling Latent Reasoning via Looped Language Models" (Li et al., 2025)
+        
+        Uses soft halt probabilities instead of hard one-hot assignment.
+        """
+        B, C, T = predictions.size()
+        
+        if halt_probs is None:
+            p_t = torch.ones(B, T, device=predictions.device) / T
+        else:
+            p_t = halt_probs
+        
+        targets_expanded = targets.unsqueeze(1).expand(-1, T)
+        ce_per_step = F.cross_entropy(predictions, targets_expanded, reduction='none')
+        
+        p_normalized = p_t / (p_t.sum(dim=1, keepdim=True) + 1e-8)
+        loss_rec = (p_normalized * ce_per_step).sum(dim=1).mean()
+        
+        entropy = -(p_normalized * torch.log(p_normalized + 1e-8)).sum(dim=1).mean()
+        
+        log_T = torch.log(torch.tensor(T, device=predictions.device, dtype=torch.float32))
+        kl_uniform = log_T - entropy
+        
+        total_loss = loss_rec + self.beta * kl_uniform
+        
+        exit_steps = p_t.argmax(dim=1) if halt_probs is not None else torch.full((B,), T - 1, dtype=torch.long, device=predictions.device)
+        
+        return total_loss, exit_steps

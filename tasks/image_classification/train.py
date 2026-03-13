@@ -322,6 +322,9 @@ def parse_args():
     parser.add_argument(
         "--num_workers_train", type=int, default=1, help="Num workers training."
     )
+    parser.add_argument(
+        "--img_size", type=int, default=100, help="Image size to resize to (square)."
+    )
 
     # Housekeeping
     parser.add_argument(
@@ -414,7 +417,7 @@ def parse_args():
 
 
 def get_dataset(
-    dataset, root, val_split_ratio=0.0, use_test_as_val=False, grayscale=False, convert_grayscale_to_rgb=False
+    dataset, root, val_split_ratio=0.0, use_test_as_val=False, grayscale=False, convert_grayscale_to_rgb=False, img_size=100
 ):
     if dataset == "imagenet":
         dataset_mean = [0.485, 0.456, 0.406]
@@ -534,7 +537,7 @@ def get_dataset(
         if grayscale and not convert_grayscale_to_rgb:
             train_transform = transforms.Compose(
                 [
-                    transforms.Resize((100, 100)),
+                    transforms.Resize((img_size, img_size)),
                     transforms.RandomHorizontalFlip(),
                     transforms.Grayscale(num_output_channels=1),
                     transforms.ToTensor(),
@@ -543,7 +546,7 @@ def get_dataset(
             )
             test_transform = transforms.Compose(
                 [
-                    transforms.Resize((100, 100)),
+                    transforms.Resize((img_size, img_size)),
                     transforms.Grayscale(num_output_channels=1),
                     transforms.ToTensor(),
                     normalize,
@@ -552,7 +555,7 @@ def get_dataset(
         elif convert_grayscale_to_rgb:
             train_transform = transforms.Compose(
                 [
-                    transforms.Resize((100, 100)),
+                    transforms.Resize((img_size, img_size)),
                     transforms.RandomHorizontalFlip(),
                     transforms.Grayscale(num_output_channels=3),
                     transforms.ToTensor(),
@@ -561,7 +564,7 @@ def get_dataset(
             )
             test_transform = transforms.Compose(
                 [
-                    transforms.Resize((100, 100)),
+                    transforms.Resize((img_size, img_size)),
                     transforms.Grayscale(num_output_channels=3),
                     transforms.ToTensor(),
                     normalize,
@@ -570,7 +573,7 @@ def get_dataset(
         else:
             train_transform = transforms.Compose(
                 [
-                    transforms.Resize((100, 100)),
+                    transforms.Resize((img_size, img_size)),
                     transforms.RandomHorizontalFlip(),
                     transforms.ToTensor(),
                     normalize,
@@ -578,7 +581,7 @@ def get_dataset(
             )
             test_transform = transforms.Compose(
                 [
-                    transforms.Resize((100, 100)),
+                    transforms.Resize((img_size, img_size)),
                     transforms.ToTensor(),
                     normalize,
                 ]
@@ -615,7 +618,7 @@ def get_dataset(
         normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
         train_transform = transforms.Compose(
             [
-                transforms.Resize((100, 100)),
+                transforms.Resize((img_size, img_size)),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
                 normalize,
@@ -623,7 +626,7 @@ def get_dataset(
         )
         test_transform = transforms.Compose(
             [
-                transforms.Resize((100, 100)),
+                transforms.Resize((img_size, img_size)),
                 transforms.ToTensor(),
                 normalize,
             ]
@@ -673,7 +676,7 @@ def get_dataset(
         ]
     elif dataset == "affectnet":
         train_transform_no_norm = transforms.Compose([
-            transforms.Resize((112, 112)),
+            transforms.Resize((img_size, img_size)),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
         ])
@@ -686,13 +689,13 @@ def get_dataset(
         normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
         
         train_transform = transforms.Compose([
-            transforms.Resize((112, 112)),
+            transforms.Resize((img_size, img_size)),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize,
         ])
         test_transform = transforms.Compose([
-            transforms.Resize((112, 112)),
+            transforms.Resize((img_size, img_size)),
             transforms.ToTensor(),
             normalize,
         ])
@@ -723,15 +726,29 @@ if __name__ == "__main__":
     # Hosuekeeping
     args = parse_args()
 
-    set_seed(args.seed, False)
+    # Set up descriptive run name for experiments
+    run_name = f"{args.model}_{args.dataset}_bs{args.batch_size}_lr{args.lr}"
+    if args.model == "ctm_gated":
+        run_name += f"_exit={args.exit_strategy}"
+        if args.exit_strategy == "certainty":
+            run_name += f"-thr{args.exit_threshold}"
+        elif args.exit_strategy in ("ponder", "normal", "learned"):
+            run_name += f"-lp{args.lambda_p}-beta{args.beta}"
+        run_name += f"_loss={args.loss_type}"
+    
+    # Update log_dir to be unique based on run_name if it's the default or generic
+    if "scratch" in args.log_dir or args.log_dir == "logs":
+        args.log_dir = os.path.join("logs", run_name)
+
     if not os.path.exists(args.log_dir):
         os.makedirs(args.log_dir)
+
     # Set up logging
     wandb.init(
         project="continuous-thought-machines-fer",
         dir=args.log_dir,
         config=vars(args),
-        name=f"{args.model}_{args.dataset}_bs{args.batch_size}_lr{args.lr}_iters{args.training_iterations}",
+        name=run_name,
         reinit=True,
     )
     wandb.log({"Logging initialized": True})
@@ -755,6 +772,7 @@ if __name__ == "__main__":
             args.use_test_as_val,
             args.grayscale,
             args.convert_grayscale_to_rgb,
+            args.img_size,
         )
     )
 
@@ -1171,7 +1189,7 @@ if __name__ == "__main__":
                         pbar_desc = f"CTM Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Where_certain={where_most_certain.float().mean().item():0.2f}+-{where_most_certain.float().std().item():0.2f} ({where_most_certain.min().item():d}<->{where_most_certain.max().item():d})"
 
                 elif args.model == "ctm_gated":
-                    predictions, certainties, synchronisation, exit_steps = model(inputs)
+                    predictions, certainties, synchronisation, exit_steps, _ = model(inputs)
                     loss, where_most_certain = ctm_gated_loss(
                         predictions, certainties, targets, exit_steps
                     )
@@ -1357,7 +1375,7 @@ if __name__ == "__main__":
                                     all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
 
                             elif args.model == "ctm_gated":
-                                these_predictions, certainties, _, these_exit_steps = model(inputs, use_early_exit=False)
+                                these_predictions, certainties, _, these_exit_steps, _ = model(inputs, use_early_exit=False)
                                 loss, where_most_certain = ctm_gated_loss(
                                     these_predictions, certainties, targets, these_exit_steps
                                 )
@@ -1591,7 +1609,8 @@ if __name__ == "__main__":
                                         all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
 
                                 elif args.model == "ctm_gated":
-                                    these_predictions, certainties, _, these_exit_steps = model(inputs, use_early_exit=False)
+                                   these_predictions, certainties, _, these_exit_steps, _ = model(inputs, use_early_exit=False)
+
                                     loss, where_most_certain = ctm_gated_loss(
                                         these_predictions, certainties, targets, these_exit_steps
                                     )
@@ -1993,7 +2012,7 @@ if __name__ == "__main__":
                 with torch.autocast(device_type="cuda" if "cuda" in device else "cpu", dtype=torch.float16, enabled=args.use_amp):
                     if args.model in ["ctm", "lstm", "ctm_gated"]:
                         if args.model == "ctm_gated":
-                            predictions, certainties, _, _ = model(inputs)
+                            predictions, certainties, _, _, _ = model(inputs)
                         else:
                             predictions, certainties, _ = model(inputs)
                         loss, where_most_certain = image_classification_loss(

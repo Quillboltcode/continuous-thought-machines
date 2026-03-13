@@ -14,6 +14,8 @@ from models.constants import (
     VALID_POSITIONAL_EMBEDDING_TYPES
 )
 
+from utils.losses import PonderLoss, LoopLMLoss, CTMGatedLoss
+
 
 class CTMGated(nn.Module):
     """
@@ -22,9 +24,11 @@ class CTMGated(nn.Module):
     Extends the CTM with a gating mechanism that allows early termination of the thinking process.
     The gate can be based on:
     - Certainty threshold: Exit when model's certainty exceeds a threshold
+    - Certainty argmax: Exit at the step with highest certainty (most aligned with CTM loss)
     - Ponder loss: KL divergence with geometric distribution (like PonderNet)
     - Normal distribution: Exit based on normal distribution CDF
     - Learned gate: A learnable halting probability
+    - Improvement predictor: Learn to predict future improvement and exit when improvement < threshold
     
     Args:
         exit_strategy (str): Strategy for early exit. Options:
@@ -32,6 +36,7 @@ class CTMGated(nn.Module):
             - 'ponder': Use PonderNet-style halting probabilities
             - 'normal': Use normal distribution for halting
             - 'learned': Learn halting probabilities
+            - 'improvement': Learn to predict improvement and exit when predicted improvement < threshold
             - 'none': No early exit (standard CTM behavior)
         exit_threshold (float): Threshold for certainty-based exit [0, 1]
         lambda_p (float): Geometric distribution parameter for ponder loss
@@ -39,6 +44,7 @@ class CTMGated(nn.Module):
         use_halt_logits (bool): Whether to use learnable halting logits
         min_steps (int): Minimum number of thinking steps before early exit
         max_iterations (int): Maximum number of thinking steps (same as iterations)
+        improvement_threshold (float): Threshold for improvement-based exit [0, 1]
         
     Inherits most args from CTM:
         iterations (int): Number of internal 'thought' ticks (T, in paper).
@@ -89,9 +95,10 @@ class CTMGated(nn.Module):
                  exit_threshold=0.9,
                  lambda_p=0.2,
                  beta=0.01,
-                 use_halt_logits=False,
-                 min_steps=1,
-                 ):
+                  use_halt_logits=False,
+                  min_steps=1,
+                  improvement_threshold=0.01,
+                  ):
         super(CTMGated, self).__init__()
 
         self.iterations = iterations
@@ -114,6 +121,7 @@ class CTMGated(nn.Module):
         self.lambda_p = lambda_p
         self.beta = beta
         self.min_steps = min_steps
+        self.improvement_threshold = improvement_threshold
         
         dropout_nlm = dropout if dropout_nlm is None else dropout_nlm
 
@@ -149,6 +157,14 @@ class CTMGated(nn.Module):
             self.halt_logits = nn.Linear(self.synch_representation_size_out, 1)
             nn.init.zeros_(self.halt_logits.weight)
             nn.init.zeros_(self.halt_logits.bias)
+        
+        if exit_strategy == 'improvement':
+            self.improvement_predictor = nn.Sequential(
+                nn.Linear(self.d_model, 64),
+                nn.ReLU(),
+                nn.Linear(64, 1),
+                nn.Sigmoid()
+            )
 
     def compute_synchronisation(self, activated_state, decay_alpha, decay_beta, r, synch_type):
         if synch_type == 'action':
@@ -227,15 +243,24 @@ class CTMGated(nn.Module):
         elif self.exit_strategy == 'certainty':
             halt_prob = None
             
+        elif self.exit_strategy == 'improvement':
+            halt_prob = None
+            
         else:
             halt_prob = None
             
         return halt_prob
 
-    def should_exit(self, step, certainties, halt_prob=None):
+    def compute_predicted_improvement(self, activated_state):
+        if hasattr(self, 'improvement_predictor'):
+            predicted_improvement = self.improvement_predictor(activated_state).squeeze(-1)
+            return predicted_improvement
+        return None
+
+    def should_exit(self, step, certainties, halt_prob=None, activated_state=None):
         B = certainties.size(0)
         
-        if self.exit_strategy == 'none' or halt_prob is None:
+        if self.exit_strategy == 'none':
             return torch.zeros(B, dtype=torch.bool, device=certainties.device)
         
         elif self.exit_strategy == 'certainty':
@@ -243,8 +268,20 @@ class CTMGated(nn.Module):
             should_exit = (certainty_values > self.exit_threshold) & (step >= self.min_steps)
             
         elif self.exit_strategy in ('ponder', 'normal', 'learned'):
-            rand_val = torch.rand(B, device=certainties.device)
-            should_exit = (halt_prob > rand_val) & (step >= self.min_steps)
+            if halt_prob is None:
+                return torch.zeros(B, dtype=torch.bool, device=certainties.device)
+            if self.training:
+                rand_val = torch.rand(B, device=certainties.device)
+                should_exit = (halt_prob > rand_val) & (step >= self.min_steps)
+            else:
+                should_exit = (halt_prob > 0.5) & (step >= self.min_steps)
+            
+        elif self.exit_strategy == 'improvement':
+            if activated_state is not None and hasattr(self, 'improvement_predictor'):
+                predicted_improvement = self.compute_predicted_improvement(activated_state)
+                should_exit = (predicted_improvement < self.improvement_threshold) & (step >= self.min_steps)
+            else:
+                should_exit = torch.zeros(B, dtype=torch.bool, device=certainties.device)
             
         else:
             should_exit = torch.zeros(B, dtype=torch.bool, device=certainties.device)
@@ -370,8 +407,7 @@ class CTMGated(nn.Module):
             neuron_indices_left = torch.from_numpy(np.random.choice(np.arange(d_model), size=n_synch))
             neuron_indices_right = torch.concatenate((neuron_indices_left[:n_random_pairing_self], torch.from_numpy(np.random.choice(np.arange(d_model), size=n_synch-n_random_pairing_self))))
 
-        device = self.start_activated_state.device
-        return neuron_indices_left.to(device), neuron_indices_right.to(device)
+        return neuron_indices_left, neuron_indices_right
 
     def get_neuron_select_type(self):
         print(f"Using neuron select type: {self.neuron_select_type}")
@@ -384,7 +420,7 @@ class CTMGated(nn.Module):
         return neuron_select_type_out, neuron_select_type_action
 
     def verify_args(self):
-        assert self.exit_strategy in ['certainty', 'ponder', 'normal', 'learned', 'none'], \
+        assert self.exit_strategy in ['certainty', 'ponder', 'normal', 'learned', 'none', 'improvement'], \
             f"Invalid exit_strategy: {self.exit_strategy}"
         
         assert self.neuron_select_type in VALID_NEURON_SELECT_TYPES, \
@@ -450,6 +486,30 @@ class CTMGated(nn.Module):
         
         return total_loss, p_t
 
+    def compute_improvement_predictor_loss(self, predictions, targets, activated_states_list):
+        if not hasattr(self, 'improvement_predictor') or activated_states_list is None:
+            return None
+        
+        B, C, T = predictions.size()
+        if T < 2 or len(activated_states_list) < T - 1:
+            return None
+        
+        targets_expanded = targets.unsqueeze(1).expand(-1, T)
+        step_losses = F.cross_entropy(predictions, targets_expanded, reduction='none')
+        
+        actual_improvements = torch.zeros(B, T - 1, device=predictions.device)
+        for t in range(T - 1):
+            actual_improvements[:, t] = step_losses[:, t] - step_losses[:, t + 1]
+        
+        predicted_improvements = torch.zeros(B, T - 1, device=predictions.device)
+        for t in range(T - 1):
+            activated_state = activated_states_list[t]
+            predicted_improvements[:, t] = self.improvement_predictor(activated_state).squeeze(-1)
+        
+        loss = F.mse_loss(predicted_improvements, actual_improvements.clamp(0, 1))
+        
+        return loss
+
     def forward(self, x, track=False, use_early_exit=True):
         B = x.size(0)
         device = x.device
@@ -461,6 +521,7 @@ class CTMGated(nn.Module):
         attention_tracking = []
         exit_steps = torch.full((B,), self.iterations - 1, dtype=torch.long, device=device)
         halt_probs_all = []
+        activated_states_all = []
 
         kv = self.compute_features(x)
 
@@ -471,9 +532,8 @@ class CTMGated(nn.Module):
         certainties = torch.empty(B, 2, self.iterations, device=device, dtype=torch.float32)
 
         decay_alpha_action, decay_beta_action = None, None
-        self.decay_params_action.data = torch.clamp(self.decay_params_action, 0, 15)
-        self.decay_params_out.data = torch.clamp(self.decay_params_out, 0, 15)
-        r_action, r_out = torch.exp(-self.decay_params_action).unsqueeze(0).repeat(B, 1), torch.exp(-self.decay_params_out).unsqueeze(0).repeat(B, 1)
+        r_action = torch.exp(-self.decay_params_action.clamp(0, 15)).unsqueeze(0).repeat(B, 1)
+        r_out = torch.exp(-self.decay_params_out.clamp(0, 15)).unsqueeze(0).repeat(B, 1)
 
         _, decay_alpha_out, decay_beta_out = self.compute_synchronisation(activated_state, None, None, r_out, synch_type='out')
 
@@ -506,10 +566,19 @@ class CTMGated(nn.Module):
                 if halt_prob is not None:
                     halt_probs_all.append(halt_prob)
                 
-                should_exit = self.should_exit(stepi, certainties, halt_prob)
+                should_exit = self.should_exit(stepi, certainties, halt_prob, activated_state)
                 newly_halted = should_exit & ~all_halted
                 exit_steps[newly_halted] = stepi
                 all_halted = all_halted | should_exit
+                
+                if not self.training and all_halted.all():
+                    # Only break if not tracking, otherwise we need full tracking history
+                    if not track:
+                        # Slice tensors to actual steps taken if needed? 
+                        # Actually just breaking is fine, the rest of predictions will be garbage/empty for these indices but they should have exited anyway.
+                        break
+            
+            activated_states_all.append(activated_state.detach())
 
             if track:
                 pre_activations_tracking.append(state_trace[:,:,-1].detach().cpu().numpy())
@@ -521,233 +590,4 @@ class CTMGated(nn.Module):
         if track:
             return predictions, certainties, (np.array(synch_out_tracking), np.array(synch_action_tracking)), np.array(pre_activations_tracking), np.array(post_activations_tracking), np.array(attention_tracking), exit_steps
         
-        return predictions, certainties, synchronisation_out, exit_steps
-
-
-class PonderLoss(nn.Module):
-    """
-    PonderNet loss with geometric prior regularization.
-    
-    From: "PonderNet: Learning to Ponder" (Banino et al., 2021)
-    https://arxiv.org/abs/2107.05407
-    
-    Loss = ReconstructionLoss + beta * KL(p_halt || geometric_prior)
-    
-    The geometric prior encourages the model to halt after approximately 1/lambda_p steps.
-    """
-    def __init__(self, lambda_p: float = 0.2, beta: float = 0.01, max_steps: int = 10):
-        """
-        Args:
-            lambda_p: Parameter for geometric prior (expected steps = 1/lambda_p)
-            beta: Weight for regularization term
-            max_steps: Maximum number of pondering steps (truncation point)
-        """
-        super().__init__()
-        self.beta = beta
-        self.lambda_p = lambda_p
-        self.max_steps = max_steps
-        
-        steps = torch.arange(1, max_steps + 1, dtype=torch.float32)
-        prior = (1 - lambda_p) ** (steps - 1) * lambda_p
-        self.register_buffer('prior', prior / prior.sum())
-        
-    def forward(self, predictions: torch.Tensor, targets: torch.Tensor):
-        """
-        Args:
-            predictions: Predictions [batch_size, max_steps, ...]
-            targets: Targets [batch_size, ...]
-            
-        Returns:
-            total_loss, recon_loss, reg_loss
-        """
-        if predictions.dim() == 3:
-            predictions = predictions.permute(1, 0, 2)  # [max_steps, batch_size, ...]
-        
-        max_steps = predictions.shape[0]
-        batch_size = predictions.shape[1]
-        
-        p = torch.ones(max_steps, batch_size, device=predictions.device) / max_steps
-        
-        recon_loss = torch.tensor(0., device=predictions.device)
-        for n in range(max_steps):
-            step_loss = F.cross_entropy(predictions[n], targets, reduction='mean')
-            recon_loss = recon_loss + (p[n] * step_loss)
-        
-        prior = self.prior[:max_steps].unsqueeze(1).expand(-1, batch_size)
-        
-        p_normalized = p / (p.sum(dim=0, keepdim=True) + 1e-8)
-        reg_loss = (p_normalized * torch.log(p_normalized / (prior + 1e-10) + 1e-10)).sum(dim=0).mean()
-        
-        total_loss = recon_loss + self.beta * reg_loss
-        
-        return total_loss, recon_loss.detach(), reg_loss.detach()
-
-
-class LoopLMLoss(nn.Module):
-    """
-    LoopLM loss with uniform prior (entropy regularization).
-    
-    From: "Scaling Latent Reasoning via Looped Language Models" (Li et al., 2025)
-    https://arxiv.org/abs/2502.10048
-    
-    Loss = E_p[L_step] + beta * KL(p || uniform) 
-         = E_p[L_step] + beta * (log T_max - H(p))
-    
-    The uniform prior encourages the model to distribute reasoning steps evenly.
-    """
-    def __init__(self, beta: float = 0.01, max_steps: int = 4):
-        """
-        Args:
-            beta: Weight for entropy regularization
-            max_steps: Maximum number of recurrent steps (T_max)
-        """
-        super().__init__()
-        self.beta = beta
-        self.max_steps = max_steps
-        self.register_buffer('log_uniform', 
-                           torch.log(torch.tensor(max_steps, dtype=torch.float32)))
-        
-    def forward(self, step_losses: torch.Tensor, p: torch.Tensor):
-        """
-        Args:
-            step_losses: Loss at each step [max_steps, batch_size]
-            p: Exit/gate distribution [max_steps, batch_size]
-               (probability of exiting at step t)
-               
-        Returns:
-            total_loss, expected_loss, entropy_bonus
-        """
-        if step_losses.dim() == 1:
-            step_losses = step_losses.unsqueeze(1)
-        if p.dim() == 1:
-            p = p.unsqueeze(1)
-            
-        p = p / (p.sum(dim=0, keepdim=True) + 1e-10)
-        
-        expected_loss = (p * step_losses).sum(dim=0)
-        
-        entropy = -(p * torch.log(p + 1e-10)).sum(dim=0)
-        kl_uniform = self.log_uniform - entropy
-        
-        total = expected_loss + self.beta * kl_uniform
-        
-        return total.mean(), expected_loss.mean(), entropy.mean()
-
-
-class CTMGatedLoss(nn.Module):
-    """
-    Loss function for CTM-Gated model.
-    
-    Supports multiple loss types:
-    - 'standard': Standard CTM loss using minimum CE + most certain CE
-    - 'ponder': PonderNet-style loss with geometric prior (Banino et al., 2021)
-    - 'loop': LoopLM-style loss with uniform prior (Li et al., 2025)
-    """
-    
-    def __init__(self, loss_type='standard', lambda_p=0.2, beta=0.01, use_most_certain=True, max_steps=10):
-        super(CTMGatedLoss, self).__init__()
-        self.loss_type = loss_type
-        self.lambda_p = lambda_p
-        self.beta = beta
-        self.use_most_certain = use_most_certain
-        self.max_steps = max_steps
-        
-    def forward(self, predictions, certainties, targets, exit_steps=None, halt_probs=None):
-        """
-        Args:
-            predictions: [B, C, T] - model predictions at each step
-            certainties: [B, 2, T] - certainty values (entropy, 1-entropy)
-            targets: [B] - target class indices
-            exit_steps: [B] - step at which each sample exited (for computing halt loss)
-            halt_probs: List of [B] tensors - halting probabilities at each step
-        """
-        if self.loss_type == 'standard':
-            return self._standard_loss(predictions, certainties, targets)
-        elif self.loss_type == 'ponder':
-            return self._ponder_loss(predictions, targets, exit_steps)
-        elif self.loss_type == 'loop':
-            return self._loop_loss(predictions, targets, exit_steps)
-        else:
-            raise ValueError(f"Unknown loss type: {self.loss_type}")
-    
-    def _standard_loss(self, predictions, certainties, targets):
-        """Standard CTM loss: min loss + most certain loss"""
-        B = predictions.size(0)
-        T = predictions.size(2)
-        
-        targets_expanded = torch.repeat_interleave(targets.unsqueeze(-1), T, -1)
-        losses = F.cross_entropy(predictions, targets_expanded, reduction='none')
-        
-        loss_index_1 = losses.argmin(dim=1)
-        loss_index_2 = certainties[:, 1].argmax(-1)
-        
-        if not self.use_most_certain:
-            loss_index_2[:] = T - 1
-        
-        batch_indexer = torch.arange(B, device=predictions.device)
-        loss_minimum_ce = losses[batch_indexer, loss_index_1].mean()
-        loss_selected = losses[batch_indexer, loss_index_2].mean()
-        
-        loss = (loss_minimum_ce + loss_selected) / 2
-        
-        return loss, loss_index_2
-    
-    def _ponder_loss(self, predictions, targets, exit_steps):
-        """
-        PonderNet-style loss with geometric prior.
-        
-        From: "PonderNet: Learning to Ponder" (Banino et al., 2021)
-        """
-        B, C, T = predictions.size()
-        
-        if exit_steps is None:
-            exit_steps = torch.full((B,), T - 1, dtype=torch.long, device=predictions.device)
-        
-        p_t = torch.zeros(B, T, device=predictions.device)
-        for b in range(B):
-            t = exit_steps[b].item()
-            p_t[b, t] = 1.0
-        
-        expanded_targets = targets.unsqueeze(1).expand(-1, T)
-        ce_per_step = F.cross_entropy(predictions, expanded_targets, reduction='none')
-        loss_rec = (p_t * ce_per_step).sum(dim=1).mean()
-        
-        steps = torch.arange(1, T + 1, device=predictions.device).float()
-        geo_prior = torch.pow(1 - self.lambda_p, steps - 1) * self.lambda_p
-        geo_prior = geo_prior / geo_prior.sum()
-        
-        kl_div = (p_t * (torch.log(p_t + 1e-8) - torch.log(geo_prior + 1e-8))).sum(dim=1).mean()
-        
-        total_loss = loss_rec + self.beta * kl_div
-        
-        return total_loss, exit_steps
-    
-    def _loop_loss(self, predictions, targets, exit_steps):
-        """
-        LoopLM-style loss with uniform prior.
-        
-        From: "Scaling Latent Reasoning via Looped Language Models" (Li et al., 2025)
-        """
-        B, C, T = predictions.size()
-        
-        if exit_steps is None:
-            exit_steps = torch.full((B,), T - 1, dtype=torch.long, device=predictions.device)
-        
-        p_t = torch.zeros(B, T, device=predictions.device)
-        for b in range(B):
-            t = exit_steps[b].item()
-            p_t[b, t] = 1.0
-        
-        expanded_targets = targets.unsqueeze(1).expand(-1, T)
-        ce_per_step = F.cross_entropy(predictions, expanded_targets, reduction='none')
-        loss_rec = (p_t * ce_per_step).sum(dim=1).mean()
-        
-        p_normalized = p_t / (p_t.sum(dim=1, keepdim=True) + 1e-8)
-        entropy = -(p_normalized * torch.log(p_normalized + 1e-8)).sum(dim=1).mean()
-        
-        log_T = torch.log(torch.tensor(T, device=predictions.device, dtype=torch.float32))
-        kl_uniform = log_T - entropy
-        
-        total_loss = loss_rec + self.beta * kl_uniform
-        
-        return total_loss, exit_steps
+        return predictions, certainties, synchronisation_out, exit_steps, activated_states_all

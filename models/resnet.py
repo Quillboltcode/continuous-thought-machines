@@ -359,21 +359,16 @@ def _resnet(
             # Check if grayscale mode is enabled (uses kernel_size=1 instead of 3)
             grayscale = kwargs.get('grayscale', False)
 
-            # Adapt conv1.weight from torchvision model (kernel_size=7) to our custom model
-            tv_conv1_weights = pretrained_state_dict[
-                "conv1.weight"
-            ]  # Expected shape: [64, 3, 7, 7]
-
+            # For grayscale: use kaiming init instead of noisy adapted weights from RGB
             if grayscale:
-                # For grayscale with kernel_size=1, just average all 3 input channels to 1 channel
-                adapted_conv1_weights = tv_conv1_weights.mean(
-                    dim=1, keepdim=True
-                )  # Shape: [64, 1, 7, 7]
-                # Then crop to 1x1 (center pixel)
-                adapted_conv1_weights = adapted_conv1_weights[
-                    :, :, 3:4, 3:4
-                ]  # Shape: [64, 1, 1, 1]
+                # Remove conv1 weights from state dict - will use fresh kaiming init
+                pretrained_state_dict.pop("conv1.weight", None)
             else:
+                # Adapt conv1.weight from torchvision model (kernel_size=7) to our custom model
+                tv_conv1_weights = pretrained_state_dict[
+                    "conv1.weight"
+                ]  # Expected shape: [64, 3, 7, 7]
+
                 # Crop the 7x7 kernel to 3x3 (take the center)
                 # (7 - 3) // 2 = 2, so crop from index 2 to 2+3=5
                 cropped_conv1_weights = tv_conv1_weights[
@@ -394,11 +389,15 @@ def _resnet(
                         1, in_channels, 1, 1
                     )  # Shape: [64, in_channels, 3, 3]
 
-            # Update the state dict with the adapted conv1 weights
-            pretrained_state_dict["conv1.weight"] = adapted_conv1_weights
+                # Update the state dict with the adapted conv1 weights
+                pretrained_state_dict["conv1.weight"] = adapted_conv1_weights
 
             # Load the (potentially modified) state dict. strict=False is important.
             model.load_state_dict(pretrained_state_dict, strict=False)
+
+            # Apply kaiming initialization for grayscale conv1
+            if grayscale:
+                nn.init.kaiming_normal_(model.conv1.weight, mode='fan_out', nonlinearity='relu')
         elif pretrained_dataset.lower() == "celeba":
             model = ResNet(
                 in_channels,
