@@ -526,7 +526,7 @@ def get_dataset(
         )
         idx_order = np.argsort(np.array(list(train_data.class_to_idx.values())))
         class_labels = list(np.array(list(train_data.class_to_idx.keys()))[idx_order])
-    elif dataset == "FerPlusPlus":
+    elif dataset == "ferplusplus":
         if grayscale and not convert_grayscale_to_rgb:
             dataset_mean = [0.5]
             dataset_std = [0.5]
@@ -613,7 +613,7 @@ def get_dataset(
             )
         else:
             test_data = test_data
-    elif dataset == "RAFDB":
+    elif dataset == "rafdb":
         dataset_mean = [0.485, 0.456, 0.406]
         dataset_std = [0.229, 0.224, 0.225]
         normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
