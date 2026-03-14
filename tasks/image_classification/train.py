@@ -15,23 +15,16 @@ if torch.cuda.is_available():
 import torch.nn as nn
 from tqdm.auto import tqdm
 
-from data.custom_datasets import ImageNet
-from torchvision import datasets
-from torchvision import transforms
-from tasks.image_classification.imagenet_classes import IMAGENET2012_CLASSES
-from models.ctm import ContinuousThoughtMachine
-from models.ctm_gated import CTMGated, CTMGatedLoss
-from models.lstm import LSTMBaseline
-from models.ff import FFBaseline
 from tasks.image_classification.plotting import (
     plot_neural_dynamics,
     make_classification_gif,
 )
 from utils.housekeeping import set_seed, zip_python_code
+from utils.model_metrics import compute_model_metrics
+from utils.dataset_utils import get_dataset, compute_dataset_stats, compute_class_distribution, log_class_histogram_wandb
+from models.factories import create_model
 from models.utils import PonderNetLoss as PonderLoss
-from models.utils import compute_ctm_flops, count_parameters
-from utils.losses import image_classification_loss  # Used by CTM, LSTM
-from utils.dataset_utils import compute_dataset_stats, compute_class_distribution, log_class_histogram_wandb
+from utils.losses import image_classification_loss
 from utils.schedulers import WarmupCosineAnnealingLR, WarmupMultiStepLR, warmup
 
 from autoclip.torch import QuantileClip
@@ -416,313 +409,6 @@ def parse_args():
     return args
 
 
-def get_dataset(
-    dataset, root, val_split_ratio=0.0, use_test_as_val=False, grayscale=False, convert_grayscale_to_rgb=False, img_size=100
-):
-    dataset = dataset.lower()
-    if dataset == "imagenet":
-        dataset_mean = [0.485, 0.456, 0.406]
-        dataset_std = [0.229, 0.224, 0.225]
-
-        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
-        train_transform = transforms.Compose(
-            [
-                transforms.RandomResizedCrop(224),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                normalize,
-            ]
-        )
-        test_transform = transforms.Compose(
-            [
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                normalize,
-            ]
-        )
-
-        class_labels = list(IMAGENET2012_CLASSES.values())
-
-        train_data = ImageNet(which_split="train", transform=train_transform)
-        test_data = ImageNet(which_split="validation", transform=test_transform)
-    elif dataset == "cifar10":
-        dataset_mean = [0.49139968, 0.48215827, 0.44653124]
-        dataset_std = [0.24703233, 0.24348505, 0.26158768]
-        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
-        train_transform = transforms.Compose(
-            [
-                transforms.AutoAugment(transforms.AutoAugmentPolicy.CIFAR10),
-                transforms.ToTensor(),
-                normalize,
-            ]
-        )
-
-        test_transform = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                normalize,
-            ]
-        )
-        full_train_data = datasets.CIFAR10(
-            root, train=True, transform=train_transform, download=True
-        )
-        test_data = datasets.CIFAR10(
-            root, train=False, transform=test_transform, download=True
-        )
-        class_labels = [
-            "air",
-            "auto",
-            "bird",
-            "cat",
-            "deer",
-            "dog",
-            "frog",
-            "horse",
-            "ship",
-            "truck",
-        ]
-
-        if use_test_as_val:
-            train_data = full_train_data
-            val_data = test_data
-            test_data = None
-        elif val_split_ratio > 0.0:
-            train_size = int((1.0 - val_split_ratio) * len(full_train_data))
-            val_size = len(full_train_data) - train_size
-            train_data, val_data = torch.utils.data.random_split(
-                full_train_data,
-                [train_size, val_size],
-                generator=torch.Generator().manual_seed(412),
-            )
-            test_data = test_data
-        else:
-            train_data = full_train_data
-            val_data = None
-            test_data = test_data
-    elif dataset == "cifar100":
-        dataset_mean = [0.5070751592371341, 0.48654887331495067, 0.4409178433670344]
-        dataset_std = [0.2673342858792403, 0.2564384629170882, 0.27615047132568393]
-        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
-
-        train_transform = transforms.Compose(
-            [
-                transforms.AutoAugment(transforms.AutoAugmentPolicy.CIFAR10),
-                transforms.ToTensor(),
-                normalize,
-            ]
-        )
-        test_transform = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                normalize,
-            ]
-        )
-        train_data = datasets.CIFAR100(
-            root, train=True, transform=train_transform, download=True
-        )
-        test_data = datasets.CIFAR100(
-            root, train=False, transform=test_transform, download=True
-        )
-        idx_order = np.argsort(np.array(list(train_data.class_to_idx.values())))
-        class_labels = list(np.array(list(train_data.class_to_idx.keys()))[idx_order])
-    elif dataset == "ferplusplus":
-        if grayscale and not convert_grayscale_to_rgb:
-            dataset_mean = [0.5]
-            dataset_std = [0.5]
-        else:
-            dataset_mean = [0.485, 0.456, 0.406]
-            dataset_std = [0.229, 0.224, 0.225]
-        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
-
-        if grayscale and not convert_grayscale_to_rgb:
-            train_transform = transforms.Compose(
-                [
-                    transforms.Resize((img_size, img_size)),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.Grayscale(num_output_channels=1),
-                    transforms.ToTensor(),
-                    normalize,
-                ]
-            )
-            test_transform = transforms.Compose(
-                [
-                    transforms.Resize((img_size, img_size)),
-                    transforms.Grayscale(num_output_channels=1),
-                    transforms.ToTensor(),
-                    normalize,
-                ]
-            )
-        elif convert_grayscale_to_rgb:
-            train_transform = transforms.Compose(
-                [
-                    transforms.Resize((img_size, img_size)),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.Grayscale(num_output_channels=3),
-                    transforms.ToTensor(),
-                    normalize,
-                ]
-            )
-            test_transform = transforms.Compose(
-                [
-                    transforms.Resize((img_size, img_size)),
-                    transforms.Grayscale(num_output_channels=3),
-                    transforms.ToTensor(),
-                    normalize,
-                ]
-            )
-        else:
-            train_transform = transforms.Compose(
-                [
-                    transforms.Resize((img_size, img_size)),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    normalize,
-                ]
-            )
-            test_transform = transforms.Compose(
-                [
-                    transforms.Resize((img_size, img_size)),
-                    transforms.ToTensor(),
-                    normalize,
-                ]
-            )
-
-        train_data = datasets.ImageFolder(
-            os.path.join(root, "train"), transform=train_transform
-        )
-        val_data = datasets.ImageFolder(
-            os.path.join(root, "val"), transform=test_transform
-        )
-        test_data = datasets.ImageFolder(
-            os.path.join(root, "test"), transform=test_transform
-        )
-        # ImageFolder assigns class indices alphabetically based on folder names
-        class_labels = sorted(train_data.classes)
-
-        if use_test_as_val:
-            val_data = test_data
-            test_data = None
-        elif val_split_ratio > 0.0:
-            train_size = int((1.0 - val_split_ratio) * len(train_data))
-            val_size = len(train_data) - train_size
-            train_data, val_data = torch.utils.data.random_split(
-                train_data,
-                [train_size, val_size],
-                generator=torch.Generator().manual_seed(412),
-            )
-        else:
-            test_data = test_data
-    elif dataset == "rafdb":
-        dataset_mean = [0.485, 0.456, 0.406]
-        dataset_std = [0.229, 0.224, 0.225]
-        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
-        train_transform = transforms.Compose(
-            [
-                transforms.Resize((img_size, img_size)),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                normalize,
-            ]
-        )
-        test_transform = transforms.Compose(
-            [
-                transforms.Resize((img_size, img_size)),
-                transforms.ToTensor(),
-                normalize,
-            ]
-        )
-        train_data = datasets.ImageFolder(
-            os.path.join(root, "train"), transform=train_transform
-        )
-        
-        # RAFDB may only have train and test folders (no val folder)
-        val_path = os.path.join(root, "val")
-        test_path = os.path.join(root, "test")
-        
-        print(f"[RAFDB] Checking dataset folders in: {root}")
-        print(f"[RAFDB] train folder exists: {os.path.exists(os.path.join(root, 'train'))}")
-        print(f"[RAFDB] val folder exists: {os.path.exists(val_path)}")
-        print(f"[RAFDB] test folder exists: {os.path.exists(test_path)}")
-        
-        if os.path.exists(val_path):
-            val_data = datasets.ImageFolder(val_path, transform=test_transform)
-            test_data = datasets.ImageFolder(test_path, transform=test_transform) if os.path.exists(test_path) else None
-        else:
-            # No val folder - use test as validation or split train
-            if use_test_as_val:
-                val_data = datasets.ImageFolder(test_path, transform=test_transform) if os.path.exists(test_path) else None
-                test_data = None
-            elif val_split_ratio > 0.0:
-                train_size = int((1.0 - val_split_ratio) * len(train_data))
-                val_size = len(train_data) - train_size
-                train_data, val_data = torch.utils.data.random_split(
-                    train_data,
-                    [train_size, val_size],
-                    generator=torch.Generator().manual_seed(412),
-                )
-                test_data = datasets.ImageFolder(test_path, transform=test_transform) if os.path.exists(test_path) else None
-            else:
-                val_data = None
-                test_data = datasets.ImageFolder(test_path, transform=test_transform) if os.path.exists(test_path) else None
-        
-        class_labels = [
-            "Surprise",
-            "Fear",
-            "Disgust",
-            "Happiness",
-            "Sadness",
-            "Anger",
-            "Neutral",
-        ]
-    elif dataset == "affectnet":
-        train_transform_no_norm = transforms.Compose([
-            transforms.Resize((img_size, img_size)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-        ])
-        temp_train_data = datasets.ImageFolder(os.path.join(root, "train"), transform=train_transform_no_norm)
-        
-        print("[INFO] Computing dataset mean and std from training set...")
-        dataset_mean, dataset_std = compute_dataset_stats(temp_train_data)
-        print(f"[INFO] AffectNet computed stats - mean: {dataset_mean}, std: {dataset_std}")
-        
-        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
-        
-        train_transform = transforms.Compose([
-            transforms.Resize((img_size, img_size)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ])
-        test_transform = transforms.Compose([
-            transforms.Resize((img_size, img_size)),
-            transforms.ToTensor(),
-            normalize,
-        ])
-        
-        train_data = datasets.ImageFolder(os.path.join(root, "train"), transform=train_transform)
-        val_data = datasets.ImageFolder(os.path.join(root, "val"), transform=test_transform)
-        test_data = datasets.ImageFolder(os.path.join(root, "test"), transform=test_transform) if os.path.exists(os.path.join(root, "test")) else None
-        
-        affectnet_idx_to_label = {
-            "0": "Neutral",
-            "1": "Happy",
-            "2": "Sad",
-            "3": "Surprise",
-            "4": "Fear",
-            "5": "Disgust",
-            "6": "Anger",
-            "7": "Contempt",
-        }
-        
-        class_labels = [affectnet_idx_to_label[i] for i in train_data.classes]
-    else:
-        raise NotImplementedError
-
-    return train_data, val_data, test_data, class_labels, dataset_mean, dataset_std
-
-
 if __name__ == "__main__":
     # Hosuekeeping
     args = parse_args()
@@ -842,94 +528,18 @@ if __name__ == "__main__":
         device = "cpu"
     print(f"Running model {args.model} on {device}")
 
-    # Conditionally create PonderLoss
+    model, loss_fn = create_model(args, prediction_reshaper)
+    model = model.to(device)
+
+    if loss_fn is not None:
+        ctm_gated_loss = loss_fn
+    else:
+        ctm_gated_loss = None
+
     if args.model == "ctm" and args.use_ponder_loss:
         ponder_loss = PonderLoss(lambda_p=args.lambda_p, beta=0.01).to(device)
-
-    # Build model conditionally
-    model = None
-    if args.model == "ctm":
-        model = ContinuousThoughtMachine(
-            iterations=args.iterations,
-            d_model=args.d_model,
-            d_input=args.d_input,
-            heads=args.heads,
-            n_synch_out=args.n_synch_out,
-            n_synch_action=args.n_synch_action,
-            synapse_depth=args.synapse_depth,
-            memory_length=args.memory_length,
-            deep_nlms=args.deep_memory,
-            memory_hidden_dims=args.memory_hidden_dims,
-            do_layernorm_nlm=args.do_normalisation,
-            backbone_type=args.backbone_type,
-            pretrained_backbone=args.pretrained_backbone,
-            positional_embedding_type=args.positional_embedding_type,
-            out_dims=args.out_dims,
-            prediction_reshaper=prediction_reshaper,
-            dropout=args.dropout,
-            dropout_nlm=args.dropout_nlm,
-            neuron_select_type=args.neuron_select_type,
-            n_random_pairing_self=args.n_random_pairing_self,
-            grayscale=args.grayscale,
-        ).to(device)
-    elif args.model == "ctm_gated":
-        model = CTMGated(
-            iterations=args.iterations,
-            d_model=args.d_model,
-            d_input=args.d_input,
-            heads=args.heads,
-            n_synch_out=args.n_synch_out,
-            n_synch_action=args.n_synch_action,
-            synapse_depth=args.synapse_depth,
-            memory_length=args.memory_length,
-            deep_nlms=args.deep_memory,
-            memory_hidden_dims=args.memory_hidden_dims,
-            do_layernorm_nlm=args.do_normalisation,
-            backbone_type=args.backbone_type,
-            pretrained_backbone=args.pretrained_backbone,
-            positional_embedding_type=args.positional_embedding_type,
-            out_dims=args.out_dims,
-            prediction_reshaper=prediction_reshaper,
-            dropout=args.dropout,
-            dropout_nlm=args.dropout_nlm,
-            neuron_select_type=args.neuron_select_type,
-            n_random_pairing_self=args.n_random_pairing_self,
-            grayscale=args.grayscale,
-            exit_strategy=args.exit_strategy,
-            exit_threshold=args.exit_threshold,
-            lambda_p=args.lambda_p,
-            beta=args.beta,
-            min_steps=args.min_steps,
-        ).to(device)
-        ctm_gated_loss = CTMGatedLoss(
-            loss_type=args.loss_type,
-            lambda_p=args.lambda_p,
-            beta=args.beta,
-            use_most_certain=True,
-            max_steps=args.iterations
-        ).to(device)
-    elif args.model == "lstm":
-        model = LSTMBaseline(
-            num_layers=args.num_layers,
-            iterations=args.iterations,
-            d_model=args.d_model,
-            d_input=args.d_input,
-            heads=args.heads,
-            backbone_type=args.backbone_type,
-            positional_embedding_type=args.positional_embedding_type,
-            out_dims=args.out_dims,
-            prediction_reshaper=prediction_reshaper,
-            dropout=args.dropout,
-        ).to(device)
-    elif args.model == "ff":
-        model = FFBaseline(
-            d_model=args.d_model,
-            backbone_type=args.backbone_type,
-            out_dims=args.out_dims,
-            dropout=args.dropout,
-        ).to(device)
     else:
-        raise ValueError(f"Unknown model type: {args.model}")
+        ponder_loss = None
 
     # For lazy modules so that we can get param count
     pseudo_inputs = train_data.__getitem__(0)[0].unsqueeze(0).to(device)
@@ -937,23 +547,14 @@ if __name__ == "__main__":
 
     model.train()
 
-    print(f"Total params: {sum(p.numel() for p in model.parameters())}")
+    input_channels = 1 if args.grayscale and not args.convert_grayscale_to_rgb else 3
+    metrics = compute_model_metrics(model, args.model, args.dataset, input_channels=input_channels)
+    print(f"Total params: {metrics['total_params']:,}")
+    wandb.log({"Total Parameters": metrics['total_params']})
 
-    # Compute and log FLOPs
-    if args.model in ["ctm", "ctm_gated"]:
-        if args.grayscale and not args.convert_grayscale_to_rgb:
-            input_channels = 1
-        else:
-            input_channels = 3
-        input_shape = (
-            (input_channels, 224, 224)
-            if args.dataset == "imagenet"
-            else (input_channels, 32, 32)
-        )
-        flops = compute_ctm_flops(model, input_shape, batch_size=1)
-        total_flops = flops["total"]
-        print(f"Total FLOPs: {total_flops:,}")
-        wandb.log({"Total FLOPs": total_flops, "FLOPs Breakdown": flops})
+    if metrics['total_flops'] > 0:
+        print(f"Total FLOPs: {metrics['total_flops']:,}")
+        wandb.log({"Total FLOPs": metrics['total_flops'], "FLOPs Breakdown": metrics['flops_breakdown']})
 
     decay_params = []
     no_decay_params = []
