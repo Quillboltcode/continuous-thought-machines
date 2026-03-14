@@ -20,7 +20,6 @@ from tasks.image_classification.plotting import (
     make_classification_gif,
 )
 from utils.housekeeping import set_seed, zip_python_code
-from utils.model_metrics import compute_model_metrics
 from utils.dataset_utils import get_dataset, compute_dataset_stats, compute_class_distribution, log_class_histogram_wandb
 from models.factories import create_model
 from models.utils import PonderNetLoss as PonderLoss
@@ -404,6 +403,18 @@ def parse_args():
         default=False,
         help="Save best model based on validation performance.",
     )
+    parser.add_argument(
+        "--compute_flops",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Compute and log FLOPs for the model.",
+    )
+    parser.add_argument(
+        "--log_dataset_distribution",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Log dataset class distribution to wandb.",
+    )
 
     args = parser.parse_args()
     return args
@@ -464,17 +475,18 @@ if __name__ == "__main__":
     )
 
     # Log class distribution to wandb
-    train_class_dist = compute_class_distribution(train_data)
-    print(f"[INFO] Train class distribution: {dict(train_class_dist)}")
-    log_class_histogram_wandb(train_class_dist, class_labels, split="train")
-    if val_data is not None:
-        val_class_dist = compute_class_distribution(val_data)
-        print(f"[INFO] Val class distribution: {dict(val_class_dist)}")
-        log_class_histogram_wandb(val_class_dist, class_labels, split="val")
-    if test_data is not None:
-        test_class_dist = compute_class_distribution(test_data)
-        print(f"[INFO] Test class distribution: {dict(test_class_dist)}")
-        log_class_histogram_wandb(test_class_dist, class_labels, split="test")
+    if args.log_dataset_distribution:
+        train_class_dist = compute_class_distribution(train_data)
+        print(f"[INFO] Train class distribution: {dict(train_class_dist)}")
+        log_class_histogram_wandb(train_class_dist, class_labels, split="train")
+        if val_data is not None:
+            val_class_dist = compute_class_distribution(val_data)
+            print(f"[INFO] Val class distribution: {dict(val_class_dist)}")
+            log_class_histogram_wandb(val_class_dist, class_labels, split="val")
+        if test_data is not None:
+            test_class_dist = compute_class_distribution(test_data)
+            print(f"[INFO] Test class distribution: {dict(test_class_dist)}")
+            log_class_histogram_wandb(test_class_dist, class_labels, split="test")
 
     first_sample, first_label = train_data[0]
     print(f"[DEBUG] First sample shape: {first_sample.shape}, mean: {first_sample.mean().item():.4f}, label: {first_label}")
@@ -547,14 +559,16 @@ if __name__ == "__main__":
 
     model.train()
 
-    input_channels = 1 if args.grayscale and not args.convert_grayscale_to_rgb else 3
-    metrics = compute_model_metrics(model, args.model, args.dataset, input_channels=input_channels)
-    print(f"Total params: {metrics['total_params']:,}")
-    wandb.log({"Total Parameters": metrics['total_params']})
+    # Always log params, FLOPs is optional
+    print(f"Total params: {sum(p.numel() for p in model.parameters()):,}")
+    wandb.log({"Total Parameters": sum(p.numel() for p in model.parameters())})
 
-    if metrics['total_flops'] > 0:
-        print(f"Total FLOPs: {metrics['total_flops']:,}")
-        wandb.log({"Total FLOPs": metrics['total_flops'], "FLOPs Breakdown": metrics['flops_breakdown']})
+    if args.compute_flops:
+        input_channels = 1 if args.grayscale and not args.convert_grayscale_to_rgb else 3
+        metrics = compute_model_metrics(model, args.model, args.dataset, input_channels=input_channels)
+        if metrics['total_flops'] > 0:
+            print(f"Total FLOPs: {metrics['total_flops']:,}")
+            wandb.log({"Total FLOPs": metrics['total_flops'], "FLOPs Breakdown": metrics['flops_breakdown']})
 
     decay_params = []
     no_decay_params = []
