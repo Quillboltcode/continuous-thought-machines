@@ -38,8 +38,9 @@ python -m tasks.image_classification.train \
   --use_gsh \
   --use_hne \
   --use_sanp \
-  --hne_group_configs "[{'n_neurons': 170, 'memory': 2, 'hidden': 8}, {'n_neurons': 171, 'memory': 3, 'hidden': 16}, {'n_neurons': 171, 'memory': 5, 'hidden': 32}]" \
+  --hne_group_configs '[{"n_neurons": 170, "memory": 2, "hidden": 8}, {"n_neurons": 171, "memory": 3, "hidden": 16}, {"n_neurons": 171, "memory": 5, "hidden": 32}]' \
   --sanp_init_top_k 1000 \
+  --hne_group_configs_file tasks/image_classification/scripts/hne_configs.json \
   --use_psl \
   --lambda_psl 0.1 \
   --use_ctcs \

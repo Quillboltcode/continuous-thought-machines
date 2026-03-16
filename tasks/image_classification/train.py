@@ -271,6 +271,12 @@ def parse_args():
         help="JSON string for HNE group configs (CTM-Innovations only).",
     )
     parser.add_argument(
+        "--hne_group_configs_file",
+        type=str,
+        default=None,
+        help="Path to JSON file with HNE group configs (alternative to --hne_group_configs).",
+    )
+    parser.add_argument(
         "--sanp_init_top_k",
         type=int,
         default=1000,
@@ -484,6 +490,9 @@ if __name__ == "__main__":
     # Parse hne_group_configs if provided
     if args.hne_group_configs is not None:
         args.hne_group_configs = json.loads(args.hne_group_configs)
+    elif args.hne_group_configs_file is not None:
+        with open(args.hne_group_configs_file, 'r') as f:
+            args.hne_group_configs = json.load(f)
 
     # Set up descriptive run name for experiments
     run_name = f"{args.model}_{args.dataset}_bs{args.batch_size}_lr{args.lr}"
