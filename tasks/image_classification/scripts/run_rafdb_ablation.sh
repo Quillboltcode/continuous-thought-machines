@@ -4,7 +4,8 @@
 # This follows a more systematic approach: baseline -> individual -> combinations
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-HNE_CONFIGS_FILE="$SCRIPT_DIR/hne_configs.json"
+REPO_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
+HNE_CONFIGS_FILE="$REPO_ROOT/tasks/image_classification/scripts/hne_configs.json"
 
 BASE_ARGS="
   --d_model 512
