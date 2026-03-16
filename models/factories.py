@@ -1,6 +1,7 @@
 import torch
 from models.ctm import ContinuousThoughtMachine
 from models.ctm_gated import CTMGated, CTMGatedLoss
+from models.ctm_with_innovations import CTMWithInnovations
 from models.lstm import LSTMBaseline
 from models.ff import FFBaseline
 
@@ -82,6 +83,35 @@ def create_model(args, prediction_reshaper=None):
             beta=args.beta,
             use_most_certain=True,
             max_steps=args.iterations
+        )
+    elif args.model == "ctm_with_innovations":
+        model = CTMWithInnovations(
+            iterations=args.iterations,
+            d_model=args.d_model,
+            d_input=args.d_input,
+            heads=args.heads,
+            n_synch_out=args.n_synch_out,
+            n_synch_action=args.n_synch_action,
+            synapse_depth=args.synapse_depth,
+            memory_length=args.memory_length,
+            deep_nlms=args.deep_memory,
+            memory_hidden_dims=args.memory_hidden_dims,
+            do_layernorm_nlm=args.do_normalisation,
+            backbone_type=args.backbone_type,
+            pretrained_backbone=args.pretrained_backbone,
+            positional_embedding_type=args.positional_embedding_type,
+            out_dims=args.out_dims,
+            prediction_reshaper=prediction_reshaper,
+            dropout=args.dropout,
+            dropout_nlm=args.dropout_nlm,
+            neuron_select_type=args.neuron_select_type,
+            n_random_pairing_self=args.n_random_pairing_self,
+            grayscale=args.grayscale,
+            use_gsh=args.use_gsh,
+            use_hne=args.use_hne,
+            use_sanp=args.use_sanp,
+            hne_group_configs=args.hne_group_configs,
+            sanp_init_top_k=args.sanp_init_top_k,
         )
     elif args.model == "lstm":
         model = LSTMBaseline(

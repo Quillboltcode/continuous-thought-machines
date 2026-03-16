@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import random
 import wandb
@@ -22,6 +23,7 @@ from tasks.image_classification.plotting import (
 from utils.housekeeping import set_seed, zip_python_code
 from utils.dataset_utils import get_dataset, compute_dataset_stats, compute_class_distribution, log_class_histogram_wandb
 from models.factories import create_model
+from models.ctm_with_innovations import PredictiveSynchronyLoss, CrossTickContrastiveLoss
 from models.utils import PonderNetLoss as PonderLoss
 from utils.losses import image_classification_loss
 from utils.schedulers import WarmupCosineAnnealingLR, WarmupMultiStepLR, warmup
@@ -70,7 +72,7 @@ def parse_args():
         "--model",
         type=str,
         default="ctm",
-        choices=["ctm", "ctm_gated", "lstm", "ff"],
+        choices=["ctm", "ctm_gated", "ctm_with_innovations", "lstm", "ff"],
         help="Model type to train.",
     )
 
@@ -242,6 +244,61 @@ def parse_args():
         type=int,
         default=2,
         help="Number of LSTM stacked layers (LSTM only).",
+    )
+    # CTM-Innovations specific
+    parser.add_argument(
+        "--use_gsh",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable Gated Synchronization Highway (CTM-Innovations only).",
+    )
+    parser.add_argument(
+        "--use_hne",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable Hierarchical NLM Ensembles (CTM-Innovations only).",
+    )
+    parser.add_argument(
+        "--use_sanp",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable Sparse Adaptive Neuron Pairing (CTM-Innovations only).",
+    )
+    parser.add_argument(
+        "--hne_group_configs",
+        type=str,
+        default=None,
+        help="JSON string for HNE group configs (CTM-Innovations only).",
+    )
+    parser.add_argument(
+        "--sanp_init_top_k",
+        type=int,
+        default=1000,
+        help="Number of candidate pairs for SANP (CTM-Innovations only).",
+    )
+    parser.add_argument(
+        "--use_psl",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use Predictive Synchrony Loss (CTM-Innovations only).",
+    )
+    parser.add_argument(
+        "--lambda_psl",
+        type=float,
+        default=0.1,
+        help="Weight for PSL (CTM-Innovations only).",
+    )
+    parser.add_argument(
+        "--use_ctcs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use Cross-Tick Contrastive Synchronization (CTM-Innovations only).",
+    )
+    parser.add_argument(
+        "--lambda_ctcs",
+        type=float,
+        default=0.1,
+        help="Weight for CTCS (CTM-Innovations only).",
     )
 
     # Training
@@ -424,6 +481,10 @@ if __name__ == "__main__":
     # Hosuekeeping
     args = parse_args()
 
+    # Parse hne_group_configs if provided
+    if args.hne_group_configs is not None:
+        args.hne_group_configs = json.loads(args.hne_group_configs)
+
     # Set up descriptive run name for experiments
     run_name = f"{args.model}_{args.dataset}_bs{args.batch_size}_lr{args.lr}"
     if args.model == "ctm_gated":
@@ -553,6 +614,14 @@ if __name__ == "__main__":
     else:
         ponder_loss = None
 
+    psl_loss = None
+    ctcs_loss = None
+    if args.model == "ctm_with_innovations":
+        if args.use_psl:
+            psl_loss = PredictiveSynchronyLoss(synch_size=args.n_synch_out).to(device)
+        if args.use_ctcs:
+            ctcs_loss = CrossTickContrastiveLoss().to(device)
+
     # For lazy modules so that we can get param count
     pseudo_inputs = train_data.__getitem__(0)[0].unsqueeze(0).to(device)
     model(pseudo_inputs)
@@ -586,22 +655,29 @@ if __name__ == "__main__":
     if len(no_decay_names):
         print(f"WARNING, excluding: {no_decay_names}")
 
+    # Collect additional params from auxiliary losses
+    aux_params = []
+    if psl_loss is not None:
+        aux_params.append({"params": psl_loss.parameters(), "weight_decay": args.weight_decay})
+    if ctcs_loss is not None:
+        aux_params.append({"params": ctcs_loss.parameters(), "weight_decay": args.weight_decay})
+
     # Optimizer and scheduler (Common setup)
     if len(no_decay_names) and args.weight_decay != 0:
         optimizer = torch.optim.AdamW(
             [
                 {"params": decay_params, "weight_decay": args.weight_decay},
                 {"params": no_decay_params, "weight_decay": 0},
-            ],
+            ] + aux_params,
             lr=args.lr,
             eps=1e-8 if not args.use_amp else 1e-6,
         )
     else:
+        param_groups = [{"params": model.parameters(), "weight_decay": args.weight_decay}] + aux_params
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            param_groups,
             lr=args.lr,
             eps=1e-8 if not args.use_amp else 1e-6,
-            weight_decay=args.weight_decay,
         )
 
     warmup_schedule = warmup(args.warmup_steps)
@@ -635,8 +711,8 @@ if __name__ == "__main__":
     test_accuracies = []
     iters = []
     # Conditional metrics for CTM/LSTM/CTM-Gated
-    train_accuracies_most_certain = [] if args.model in ["ctm", "lstm", "ctm_gated"] else None
-    test_accuracies_most_certain = [] if args.model in ["ctm", "lstm", "ctm_gated"] else None
+    train_accuracies_most_certain = [] if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"] else None
+    test_accuracies_most_certain = [] if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"] else None
     # CTM-Gated specific: track exit steps and certainty
     train_exit_steps = [] if args.model == "ctm_gated" else None
     test_exit_steps = [] if args.model == "ctm_gated" else None
@@ -686,7 +762,7 @@ if __name__ == "__main__":
                     best_val_acc = checkpoint["best_val_acc"]
 
                 # Load conditional metrics if they exist in checkpoint and are expected for current model
-                if args.model in ["ctm", "lstm", "ctm_gated"]:
+                if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
                     train_accuracies_most_certain = checkpoint[
                         "train_accuracies_most_certain"
                     ]
@@ -719,8 +795,8 @@ if __name__ == "__main__":
                 model.backbone, mode="reduce-overhead", fullgraph=True
             )
 
-        # Compile synapses only for CTM/CTM-Gated
-        if args.model in ["ctm", "ctm_gated"]:
+        # Compile synapses only for CTM/CTM-Gated/CTM-Innovations
+        if args.model in ["ctm", "ctm_with_innovations", "ctm_gated"]:
             model.synapses = torch.compile(
                 model.synapses, mode="reduce-overhead", fullgraph=True
             )
@@ -803,6 +879,33 @@ if __name__ == "__main__":
                             .item()
                         )
                         pbar_desc = f"CTM Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Where_certain={where_most_certain.float().mean().item():0.2f}+-{where_most_certain.float().std().item():0.2f} ({where_most_certain.min().item():d}<->{where_most_certain.max().item():d})"
+
+                elif args.model == "ctm_with_innovations":
+                    predictions, certainties, synchronisation, synch_out_seq = model(inputs)
+                    loss, where_most_certain = image_classification_loss(
+                        predictions, certainties, targets, use_most_certain=True
+                    )
+                    aux_loss = 0
+                    if psl_loss is not None and synch_out_seq is not None:
+                        aux_loss = aux_loss + args.lambda_psl * psl_loss(synch_out_seq)
+                    if ctcs_loss is not None and synch_out_seq is not None:
+                        aux_loss = aux_loss + args.lambda_ctcs * ctcs_loss(synch_out_seq)
+                    loss = loss + aux_loss
+                    accuracy = (
+                        (
+                            predictions.argmax(1)[
+                                torch.arange(
+                                    predictions.size(0), device=predictions.device
+                                ),
+                                where_most_certain,
+                            ]
+                            == targets
+                        )
+                        .float()
+                        .mean()
+                        .item()
+                    )
+                    pbar_desc = f"CTM-Innovations Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Where_certain={where_most_certain.float().mean().item():0.2f}+-{where_most_certain.float().std().item():0.2f} ({where_most_certain.min().item():d}<->{where_most_certain.max().item():d})"
 
                 elif args.model == "ctm_gated":
                     predictions, certainties, synchronisation, exit_steps, _ = model(inputs)
@@ -1074,7 +1177,7 @@ if __name__ == "__main__":
                     )  # Shape (N, T) or (N,)
                     train_losses.append(np.mean(all_losses))
 
-                    if args.model in ["ctm", "lstm", "ctm_gated"]:
+                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
                         # Accuracies per tick for CTM/LSTM
                         current_train_accuracies = np.mean(
                             all_predictions == all_targets[..., np.newaxis], axis=0
@@ -1101,7 +1204,7 @@ if __name__ == "__main__":
                         "Learning Rate": current_lr,
                     }
 
-                    if args.model in ["ctm", "lstm", "ctm_gated"]:
+                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
                         log_dict["Train Accuracy (Most Certain)"] = (
                             current_train_accuracies_most_certain
                         )
@@ -1305,7 +1408,7 @@ if __name__ == "__main__":
                     all_predictions = np.concatenate(all_predictions_list)
                     test_losses.append(np.mean(all_losses))
 
-                    if args.model in ["ctm", "lstm", "ctm_gated"]:
+                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
                         current_test_accuracies = np.mean(
                             all_predictions == all_targets[..., np.newaxis], axis=0
                         )
@@ -1329,7 +1432,7 @@ if __name__ == "__main__":
                         "Test Loss": test_losses[-1],
                     }
 
-                    if args.model in ["ctm", "lstm", "ctm_gated"]:
+                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
                         log_dict["Test Accuracy (Most Certain)"] = (
                             current_test_accuracies_most_certain
                         )
@@ -1363,7 +1466,7 @@ if __name__ == "__main__":
 
                 # Save best model checkpoint based on validation (test) accuracy
                 if args.save_best_model and valloader is not None:
-                    if args.model in ["ctm", "lstm", "ctm_gated"]:
+                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
                         current_val_acc = current_test_accuracies_most_certain
                     else:
                         current_val_acc = current_test_accuracies
@@ -1383,7 +1486,7 @@ if __name__ == "__main__":
                             "iters": iters,
                             "best_val_acc": best_val_acc,
                         }
-                        if args.model in ["ctm", "lstm", "ctm_gated"]:
+                        if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
                             best_checkpoint["train_accuracies_most_certain"] = train_accuracies_most_certain
                             best_checkpoint["test_accuracies_most_certain"] = test_accuracies_most_certain
                         torch.save(best_checkpoint, best_checkpoint_path)
@@ -1398,7 +1501,7 @@ if __name__ == "__main__":
                     axacc_test = figacc.add_subplot(212)
                     cm = sns.color_palette("viridis", as_cmap=True)
 
-                    if args.model in ["ctm", "lstm", "ctm_gated"]:
+                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
                         # Plot per-tick accuracy for CTM/LSTM
                         train_acc_arr = np.array(train_accuracies)  # Shape (N_iters, T)
                         test_acc_arr = np.array(test_accuracies)  # Shape (N_iters, T)
@@ -1480,7 +1583,7 @@ if __name__ == "__main__":
                     plt.close(figloss)
 
                 # Conditional Visualization (Only for CTM/LSTM)
-                if args.model in ["ctm", "lstm", "ctm_gated"] and testloader is not None:
+                if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"] and testloader is not None:
                     try:  # For safety
                         inputs_viz, targets_viz = next(
                             iter(testloader)
@@ -1592,7 +1695,7 @@ if __name__ == "__main__":
                     "random_rng_state": random.getstate(),
                 }
                 # Conditionally add metrics specific to CTM/LSTM/CTM-Gated
-                if args.model in ["ctm", "lstm", "ctm_gated"]:
+                if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
                     checkpoint_data["train_accuracies_most_certain"] = (
                         train_accuracies_most_certain
                     )
@@ -1626,7 +1729,7 @@ if __name__ == "__main__":
             for i, (inputs, targets) in enumerate(testloader):
                 inputs, targets = inputs.to(device), targets.to(device)
                 with torch.autocast(device_type="cuda" if "cuda" in device else "cpu", dtype=torch.float16, enabled=args.use_amp):
-                    if args.model in ["ctm", "lstm", "ctm_gated"]:
+                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
                         if args.model == "ctm_gated":
                             predictions, certainties, _, _, _ = model(inputs)
                         else:
@@ -1643,7 +1746,7 @@ if __name__ == "__main__":
                         outputs = model(inputs)
                         loss = nn.CrossEntropyLoss()(outputs, targets)
                 
-                if args.model in ["ctm", "lstm", "ctm_gated"]:
+                if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
                     final_test_acc += (outputs.argmax(1) == targets).float().sum().item()
                 else:
                     final_test_acc += (outputs.argmax(1) == targets).float().sum().item()
