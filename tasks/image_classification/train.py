@@ -1394,6 +1394,31 @@ if __name__ == "__main__":
                                     if test_certainty_per_step is not None:
                                         test_certainty_per_step.append(certainties[:, 1, :].mean(dim=0).cpu().numpy())
 
+                                elif args.model == "ctm_with_innovations":
+                                    these_predictions, certainties, _, _ = model(inputs)
+                                    loss, where_most_certain = image_classification_loss(
+                                        these_predictions,
+                                        certainties,
+                                        targets,
+                                        use_most_certain=True,
+                                    )
+                                    all_predictions_list.append(
+                                        these_predictions.argmax(1).detach().cpu().numpy()
+                                    )
+                                    all_predictions_most_certain_list.append(
+                                        these_predictions.argmax(1)[
+                                            torch.arange(
+                                                these_predictions.size(0),
+                                                device=these_predictions.device,
+                                            ),
+                                            where_most_certain,
+                                        ]
+                                        .detach()
+                                        .cpu()
+                                        .numpy()
+                                    )
+                                    all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+
                                 elif args.model == "lstm":
                                     these_predictions, certainties, _ = model(inputs)
                                     loss, where_most_certain = image_classification_loss(
