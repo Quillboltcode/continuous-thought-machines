@@ -1161,6 +1161,31 @@ if __name__ == "__main__":
                                 )  # Shape (B,)
                                 all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
 
+                            elif args.model == "ctm_with_innovations":
+                                these_predictions, certainties, _, _ = model(inputs)
+                                loss, where_most_certain = image_classification_loss(
+                                    these_predictions,
+                                    certainties,
+                                    targets,
+                                    use_most_certain=True,
+                                )
+                                all_predictions_list.append(
+                                    these_predictions.argmax(1).detach().cpu().numpy()
+                                )  # Shape (B, T)
+                                all_predictions_most_certain_list.append(
+                                    these_predictions.argmax(1)[
+                                        torch.arange(
+                                            these_predictions.size(0),
+                                            device=these_predictions.device,
+                                        ),
+                                        where_most_certain,
+                                    ]
+                                    .detach()
+                                    .cpu()
+                                    .numpy()
+                                )  # Shape (B,)
+                                all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+
                             elif args.model == "ff":
                                 these_predictions = model(inputs)
                                 loss = nn.CrossEntropyLoss()(these_predictions, targets)
