@@ -7,6 +7,7 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+import wandb
 sns.set_style('darkgrid')
 import torch
 if torch.cuda.is_available():
@@ -156,6 +157,11 @@ def parse_args():
     # Precision
     parser.add_argument('--use_amp', action=argparse.BooleanOptionalAction, default=False)
 
+    # Logging
+    parser.add_argument('--use_wandb', action=argparse.BooleanOptionalAction, default=False, help='Use Weights & Biases logging.')
+    parser.add_argument('--wandb_project', type=str, default='continuous-thought-machines-fer', help='W&B project name.')
+    parser.add_argument('--wandb_entity', type=str, default=None, help='W&B entity/team name.')
+
     args = parser.parse_args()
     return args
 
@@ -217,6 +223,19 @@ if __name__=='__main__':
         zip_python_code(f'{args.log_dir}/repo_state.zip')
         with open(f'{args.log_dir}/args.txt', 'w') as f:
             print(args, file=f)
+        
+        # Initialize W&B
+        if args.use_wandb:
+            run_name = f"{args.model}_{args.dataset}_bs{args.batch_size}_lr{args.lr}"
+            wandb.init(
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+                dir=args.log_dir,
+                config=vars(args),
+                name=run_name,
+                reinit=True,
+            )
+            wandb.log({"Logging initialized": True})
     if world_size > 1: dist.barrier()
 
     # Data Loading
@@ -284,6 +303,8 @@ if __name__=='__main__':
     if is_main_process(rank):
         param_count = sum(p.numel() for p in model.module.parameters() if p.requires_grad) if world_size > 1 else sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f'Total trainable params: {param_count:,}')
+        if args.use_wandb:
+            wandb.log({"Total Parameters": param_count})
 
     # Optimizer
     decay_params = []
@@ -518,6 +539,14 @@ if __name__=='__main__':
                     test_accuracies_most_certain.append(eval_acc)
                     
                     print(f"Iter {bi} Eval: Loss={avg_eval_loss:.4f}, Acc={eval_acc:.4f}")
+                    
+                    # Log to W&B
+                    if args.use_wandb:
+                        wandb.log({
+                            "Eval Loss": avg_eval_loss,
+                            "Eval Accuracy": eval_acc,
+                            "Iteration": bi,
+                        })
 
                     # Save best model
                     if args.save_best_model and eval_acc > best_val_acc:
@@ -568,5 +597,7 @@ if __name__=='__main__':
 
     if is_main_process(rank):
         pbar.close()
+        if args.use_wandb:
+            wandb.finish()
 
     cleanup_ddp()
