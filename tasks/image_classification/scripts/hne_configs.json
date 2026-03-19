@@ -1,5 +1,5 @@
 [
-  {"n_neurons": 170, "memory": 2, "hidden": 8},
-  {"n_neurons": 171, "memory": 3, "hidden": 16},
-  {"n_neurons": 171, "memory": 5, "hidden": 32}
+  {"n_neurons": 170, "memory": 3, "hidden": 8},
+  {"n_neurons": 171, "memory": 5, "hidden": 16},
+  {"n_neurons": 171, "memory": 10, "hidden": 32}
 ]

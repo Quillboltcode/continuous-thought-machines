@@ -45,6 +45,7 @@ class CTMGated(nn.Module):
         min_steps (int): Minimum number of thinking steps before early exit
         max_iterations (int): Maximum number of thinking steps (same as iterations)
         improvement_threshold (float): Threshold for improvement-based exit [0, 1]
+        stable_ticks (int): Number of consecutive ticks certainty must exceed threshold before halting (certainty-momentum)
         
     Inherits most args from CTM:
         iterations (int): Number of internal 'thought' ticks (T, in paper).
@@ -91,13 +92,14 @@ class CTMGated(nn.Module):
                  neuron_select_type='random-pairing',
                  n_random_pairing_self=0,
                  grayscale=False,
-                 exit_strategy='certainty',
-                 exit_threshold=0.9,
-                 lambda_p=0.2,
-                 beta=0.01,
-                  use_halt_logits=False,
-                  min_steps=1,
-                  improvement_threshold=0.01,
+                  exit_strategy='certainty',
+                  exit_threshold=0.9,
+                  lambda_p=0.2,
+                  beta=0.01,
+                   use_halt_logits=False,
+                   min_steps=1,
+                   improvement_threshold=0.01,
+                   stable_ticks=1,
                   ):
         super(CTMGated, self).__init__()
 
@@ -122,6 +124,7 @@ class CTMGated(nn.Module):
         self.beta = beta
         self.min_steps = min_steps
         self.improvement_threshold = improvement_threshold
+        self.stable_ticks = stable_ticks
         
         dropout_nlm = dropout if dropout_nlm is None else dropout_nlm
 
@@ -257,7 +260,7 @@ class CTMGated(nn.Module):
             return predicted_improvement
         return None
 
-    def should_exit(self, step, certainties, halt_prob=None, activated_state=None):
+    def should_exit(self, step, certainties, halt_prob=None, activated_state=None, stable_count=None):
         B = certainties.size(0)
         
         if self.exit_strategy == 'none':
@@ -266,6 +269,9 @@ class CTMGated(nn.Module):
         elif self.exit_strategy == 'certainty':
             certainty_values = certainties[:, 1, step]
             should_exit = (certainty_values > self.exit_threshold) & (step >= self.min_steps)
+            
+            if self.stable_ticks > 1 and stable_count is not None:
+                should_exit = should_exit & (stable_count >= self.stable_ticks)
             
         elif self.exit_strategy in ('ponder', 'normal', 'learned'):
             if halt_prob is None:
@@ -538,6 +544,7 @@ class CTMGated(nn.Module):
         _, decay_alpha_out, decay_beta_out = self.compute_synchronisation(activated_state, None, None, r_out, synch_type='out')
 
         all_halted = torch.zeros(B, dtype=torch.bool, device=device)
+        stable_count = torch.zeros(B, dtype=torch.long, device=device)
         
         for stepi in range(self.iterations):
             synchronisation_action, decay_alpha_action, decay_beta_action = self.compute_synchronisation(activated_state, decay_alpha_action, decay_beta_action, r_action, synch_type='action')
@@ -561,12 +568,25 @@ class CTMGated(nn.Module):
             certainties[..., stepi] = current_certainty
 
             if use_early_exit and not all_halted.all():
+                if self.stable_ticks > 1:
+                    certainty_above_threshold = certainties[:, 1, stepi] > self.exit_threshold
+                    if stepi == 0:
+                        stable_count = certainty_above_threshold.long()
+                    else:
+                        stable_count = torch.where(
+                            certainty_above_threshold,
+                            stable_count + 1,
+                            torch.zeros_like(stable_count)
+                        )
+                else:
+                    stable_count = None
+                
                 halt_prob = self.compute_halt_probability(synchronisation_out, stepi, self.iterations)
                 
                 if halt_prob is not None:
                     halt_probs_all.append(halt_prob)
                 
-                should_exit = self.should_exit(stepi, certainties, halt_prob, activated_state)
+                should_exit = self.should_exit(stepi, certainties, halt_prob, activated_state, stable_count)
                 newly_halted = should_exit & ~all_halted
                 exit_steps[newly_halted] = stepi
                 all_halted = all_halted | should_exit
@@ -591,3 +611,92 @@ class CTMGated(nn.Module):
             return predictions, certainties, (np.array(synch_out_tracking), np.array(synch_action_tracking)), np.array(pre_activations_tracking), np.array(post_activations_tracking), np.array(attention_tracking), exit_steps
         
         return predictions, certainties, synchronisation_out, exit_steps, activated_states_all
+
+    @torch.no_grad()
+    def adaptive_forward(self, x, threshold=None, max_ticks=None):
+        """
+        Runs CTM ticks per-sample, halting each independently.
+        Returns predictions, halt ticks, and the actual outputs used.
+        
+        Args:
+            x: Input tensor [B, ...]
+            threshold: Override exit threshold for certainty-based exit
+            max_ticks: Maximum number of thinking steps
+            
+        Returns:
+            final_predictions: [B, C] - prediction at each sample's halt tick
+            halt_ticks: [B] - the tick at which each sample halted
+            all_predictions: [B, C, T] - predictions at all ticks
+            all_certainties: [B, 2, T] - certainties at all ticks
+        """
+        if threshold is None:
+            threshold = self.exit_threshold
+        if max_ticks is None:
+            max_ticks = self.iterations
+            
+        B = x.size(0)
+        device = x.device
+        
+        kv = self.compute_features(x)
+        
+        state_trace = self.start_trace.unsqueeze(0).expand(B, -1, -1)
+        activated_state = self.start_activated_state.unsqueeze(0).expand(B, -1)
+        
+        predictions = torch.empty(B, self.out_dims, max_ticks, device=device, dtype=torch.float32)
+        certainties = torch.empty(B, 2, max_ticks, device=device, dtype=torch.float32)
+        
+        decay_alpha_action, decay_beta_action = None, None
+        r_action = torch.exp(-self.decay_params_action.clamp(0, 15)).unsqueeze(0).repeat(B, 1)
+        r_out = torch.exp(-self.decay_params_out.clamp(0, 15)).unsqueeze(0).repeat(B, 1)
+        
+        _, decay_alpha_out, decay_beta_out = self.compute_synchronisation(activated_state, None, None, r_out, synch_type='out')
+        
+        halted = torch.zeros(B, dtype=torch.bool, device=device)
+        halt_tick = torch.full((B,), max_ticks - 1, dtype=torch.long, device=device)
+        stable_count = torch.zeros(B, dtype=torch.long, device=device)
+        
+        for t in range(max_ticks):
+            synchronisation_action, decay_alpha_action, decay_beta_action = self.compute_synchronisation(
+                activated_state, decay_alpha_action, decay_beta_action, r_action, synch_type='action')
+            
+            q = self.q_proj(synchronisation_action).unsqueeze(1)
+            attn_out, _ = self.attention(q, kv, kv, average_attn_weights=False, need_weights=False)
+            attn_out = attn_out.squeeze(1)
+            pre_synapse_input = torch.concatenate((attn_out, activated_state), dim=-1)
+            
+            state = self.synapses(pre_synapse_input)
+            state_trace = torch.cat((state_trace[:, :, 1:], state.unsqueeze(-1)), dim=-1)
+            
+            activated_state = self.trace_processor(state_trace)
+            
+            synchronisation_out, decay_alpha_out, decay_beta_out = self.compute_synchronisation(
+                activated_state, decay_alpha_out, decay_beta_out, r_out, synch_type='out')
+            
+            current_prediction = self.output_projector(synchronisation_out)
+            current_certainty = self.compute_certainty(current_prediction)
+            
+            predictions[..., t] = current_prediction
+            certainties[..., t] = current_certainty
+            
+            if self.stable_ticks > 1:
+                certainty_above_threshold = certainties[:, 1, t] > threshold
+                stable_count = torch.where(
+                    certainty_above_threshold,
+                    stable_count + 1,
+                    torch.zeros_like(stable_count)
+                )
+            
+            newly_halted = (~halted) & (certainties[:, 1, t] >= threshold)
+            if self.stable_ticks > 1:
+                newly_halted = newly_halted & (stable_count >= self.stable_ticks)
+            newly_halted = newly_halted & (t >= self.min_steps)
+            
+            halt_tick[newly_halted] = t
+            halted |= newly_halted
+            
+            if halted.all():
+                break
+        
+        final_predictions = predictions[torch.arange(B), :, halt_tick.clamp(max=predictions.size(-1) - 1)]
+        
+        return final_predictions, halt_tick, predictions, certainties

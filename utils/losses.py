@@ -2,6 +2,61 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
+import math
+
+
+def halting_loss(halt_probs, lambda_halt=0.01):
+    """
+    halt_probs: [B, T] — probability of halting at each tick
+    Encourages halting early while staying differentiable.
+    """
+    T = halt_probs.size(1)
+    tick_indices = torch.arange(1, T+1, device=halt_probs.device).float()
+    expected_ticks = (halt_probs * tick_indices).sum(1)
+    return lambda_halt * expected_ticks.mean()
+
+
+def certainty_efficiency_loss(certainties, alpha=0.05):
+    """
+    Penalises late-peaking certainty. Certainties: [B, 2, T].
+    Returns a scalar that is higher when certainty peaks at later ticks.
+    """
+    C = certainties[:, 1, :]
+    T = C.size(1)
+    tick_weights = torch.arange(1, T+1, dtype=C.dtype, device=C.device)
+    C_softmax = C.softmax(-1)
+    mean_tick = (C_softmax * tick_weights).sum(-1)
+    return alpha * mean_tick.mean()
+
+
+def adaptive_halt_threshold(certainties, threshold=0.8, min_stable_ticks=3):
+    """
+    Returns the earliest tick where certainty was >= threshold
+    for min_stable_ticks consecutive ticks. Falls back to argmax(certainty).
+    """
+    C = certainties[:, 1, :]
+    B, T = C.shape
+    halt_tick = C.argmax(-1).clone()
+
+    for b in range(B):
+        for t in range(T - min_stable_ticks + 1):
+            window = C[b, t:t + min_stable_ticks]
+            if (window >= threshold).all():
+                halt_tick[b] = t
+                break
+    return halt_tick
+
+
+class TickCurriculum:
+    def __init__(self, T_min=5, T_max=50, warmup_iters=50000):
+        self.T_min = T_min
+        self.T_max = T_max
+        self.warmup_iters = warmup_iters
+
+    def current_T(self, iteration):
+        frac = min(iteration / self.warmup_iters, 1.0)
+        return int(self.T_min + (self.T_max - self.T_min) * 
+                   (1 - math.cos(frac * math.pi)) / 2)
 
 
 def compute_ctc_loss(predictions, targets, blank_label=0):

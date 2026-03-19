@@ -16,7 +16,7 @@ import math
 import numpy as np
 
 from models.ctm import ContinuousThoughtMachine
-from models.modules import SuperLinear, Squeeze
+from models.modules import SuperLinear, Squeeze as ModuleSqueeze
 from models.constants import (
     VALID_NEURON_SELECT_TYPES,
     VALID_BACKBONE_TYPES,
@@ -44,33 +44,6 @@ class GatedSynchronizationHighway(nn.Module):
         gate = self.gate_proj(activated_state)
         gated = gate * synchronisation + self.residual_scale * synchronisation
         return gated
-
-
-class _GroupedLinear(nn.Module):
-    """Lightweight per-neuron linear (equivalent to SuperLinear for standalone use)."""
-
-    def __init__(self, in_dims, out_dims, N):
-        super().__init__()
-        self.register_parameter('w1', nn.Parameter(
-            torch.empty((in_dims, out_dims, N)).uniform_(
-                -1/math.sqrt(in_dims + out_dims),
-                 1/math.sqrt(in_dims + out_dims)
-            ), requires_grad=True)
-        )
-        self.register_parameter('b1', nn.Parameter(torch.zeros((1, N, out_dims))))
-
-    def forward(self, x):
-        out = torch.einsum('BDM,MHD->BDH', x, self.w1) + self.b1
-        return out.squeeze(-1)
-
-
-class _Squeeze(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, x):
-        return x.squeeze(self.dim)
 
 
 class HierarchicalNLMEnsemble(nn.Module):
@@ -106,11 +79,11 @@ class HierarchicalNLMEnsemble(nn.Module):
             end = start + n
             self.group_slices.append((start, end, m))
             nlm = nn.Sequential(
-                _GroupedLinear(in_dims=m, out_dims=2 * h, N=n),
+                SuperLinear(in_dims=m, out_dims=2 * h, N=n),
                 nn.GLU(dim=-1),
-                _GroupedLinear(in_dims=h, out_dims=2, N=n),
+                SuperLinear(in_dims=h, out_dims=2, N=n),
                 nn.GLU(dim=-1),
-                _Squeeze(-1),
+                ModuleSqueeze(-1),
             )
             self.nlms.append(nlm)
             start = end
@@ -587,7 +560,7 @@ def _test_all_innovations():
         dropout=0.1,
         use_gsh=True,
         use_hne=True,
-        use_sanp=True,
+        use_sanp=False,
         hne_group_configs=hne_group_configs,
         sanp_init_top_k=256,
     )
