@@ -215,7 +215,7 @@ if __name__=='__main__':
 
     rank, world_size, local_rank = setup_ddp()
 
-    set_seed(args.seed + rank, False)
+    set_seed(args.seed, False)
 
     # Rank 0 handles directory creation
     if is_main_process(rank):
