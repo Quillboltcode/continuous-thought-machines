@@ -549,12 +549,15 @@ if __name__=='__main__':
                         })
 
                     # Save best model
-                    if args.save_best_model and eval_acc > best_val_acc:
+                    if eval_acc > best_val_acc:
                         best_val_acc = eval_acc
-                        save_path = f'{args.log_dir}/best_model.pt'
-                        model_state_to_save = model.module.state_dict() if isinstance(model, DDP) else model.state_dict()
-                        torch.save({'model_state_dict': model_state_to_save, 'args': args}, save_path)
-                        print(f"Best model saved: {save_path} (acc={eval_acc:.4f})")
+                        if args.save_best_model:
+                            save_path = f'{args.log_dir}/best_model.pt'
+                            model_state_to_save = model.module.state_dict() if isinstance(model, DDP) else model.state_dict()
+                            torch.save({'model_state_dict': model_state_to_save, 'args': args}, save_path)
+                            print(f"Best model saved: {save_path} (acc={eval_acc:.4f})")
+                        if args.use_wandb:
+                            wandb.run.summary["best_val_acc"] = best_val_acc
 
                     # Plotting
                     fig = plt.figure(figsize=(10, 5))
