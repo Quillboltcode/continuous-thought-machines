@@ -151,6 +151,8 @@ def parse_args():
     # Tracking 
     parser.add_argument('--track_every', type=int, default=1000)
     parser.add_argument('--n_test_batches', type=int, default=20)
+    parser.add_argument('--eval_per_epoch', action=argparse.BooleanOptionalAction, default=False,
+                        help="Evaluate on full validation set after each epoch. Automatically sets n_test_batches=-1 and calculates track_every based on dataset size.")
     parser.add_argument('--plot_indices', type=int, default=[0], nargs='+')
     parser.add_argument('--compute_flops', action=argparse.BooleanOptionalAction, default=False)
 
@@ -252,6 +254,13 @@ if __name__=='__main__':
     # Use val_data for validation if available, else test_data
     eval_data = val_data if val_data is not None else test_data
     eval_sampler = DistributedSampler(eval_data, num_replicas=world_size, rank=rank, shuffle=False, seed=args.seed)
+
+    # Auto-calculate epoch-based validation if requested
+    if args.eval_per_epoch and is_main_process(rank):
+        iterations_per_epoch = len(train_data) // args.batch_size
+        args.track_every = iterations_per_epoch
+        args.n_test_batches = -1
+        print(f"[INFO] Eval per epoch enabled: track_every={args.track_every} (iterations/epoch), n_test_batches={args.n_test_batches} (full validation)")
 
     # Setup DataLoaders
     trainloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, sampler=train_sampler,

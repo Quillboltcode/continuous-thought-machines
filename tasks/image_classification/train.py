@@ -429,6 +429,12 @@ def parse_args():
         help="How many minibatches to approx metrics. Set to -1 for full eval",
     )
     parser.add_argument(
+        "--eval_per_epoch",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Evaluate on full validation set after each epoch. Automatically sets n_test_batches=-1 and calculates track_every based on dataset size.",
+    )
+    parser.add_argument(
         "--device",
         type=int,
         nargs="+",
@@ -592,6 +598,13 @@ if __name__ == "__main__":
         )
     else:
         testloader = None
+
+    # Auto-calculate epoch-based validation if requested
+    if args.eval_per_epoch:
+        iterations_per_epoch = len(train_data) // args.batch_size
+        args.track_every = iterations_per_epoch
+        args.n_test_batches = -1
+        print(f"[INFO] Eval per epoch enabled: track_every={args.track_every} (iterations/epoch), n_test_batches={args.n_test_batches} (full validation)")
 
     prediction_reshaper = [-1]  # Problem specific
     args.out_dims = len(class_labels)
