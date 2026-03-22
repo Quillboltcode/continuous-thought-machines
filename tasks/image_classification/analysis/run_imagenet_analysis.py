@@ -17,6 +17,7 @@ import seaborn as sns
 import imageio
 import cv2
 from scipy.special import softmax
+from sklearn.metrics import classification_report, confusion_matrix
 from tasks.image_classification.plotting import save_frames_to_mp4
 
 # --- Data Handling & Model ---
@@ -63,7 +64,7 @@ def parse_args():
     """Parses command-line arguments."""
     # Note: Original had two ArgumentParser instances, using the second one.
     parser = argparse.ArgumentParser(description="Visualize Continuous Thought Machine Attention")
-    parser.add_argument('--actions', type=str, nargs='+', default=['videos'], choices=['plots', 'videos', 'demo'], help="Actions to take. Plots=results plots; videos=gifs/mp4s to watch attention; demo: last frame of internal ticks")
+    parser.add_argument('--actions', type=str, nargs='+', default=['videos'], choices=['plots', 'videos', 'demo', 'classification_report'], help="Actions to take: plots (results plots), videos (gifs/mp4s to watch attention), demo (last frame of internal ticks), classification_report (per-class accuracy metrics)")
     parser.add_argument('--device', type=int, nargs='+', default=[-1], help="GPU device index or -1 for CPU")
     
     parser.add_argument('--checkpoint', type=str, default='checkpoints/imagenet/ctm_clean.pt', help="Path to ATM checkpoint")
@@ -71,7 +72,7 @@ def parse_args():
     parser.add_argument('--debug', action=argparse.BooleanOptionalAction, default=True, help='Debug mode: use CIFAR100 instead of ImageNet for debugging.')
     parser.add_argument('--dataset', type=str, default='imagenet', choices=['imagenet', 'ferplusplus', 'rafdb'], help='Dataset to use for analysis.')
     parser.add_argument('--data_root', type=str, default='data/', help='Root directory for dataset.')
-    parser.add_argument('--plot_every', type=int, default=10, help="How often to plot.")
+    parser.add_argument('--img_size', type=int, default=224, help='Image size for resizing.')
     
     parser.add_argument('--inference_iterations', type=int, default=50, help="Iterations to use during inference.")
     parser.add_argument('--data_indices', type=int, nargs='+', default=[], help="Use specific indices in validation data for demos, otherwise random.")
@@ -170,7 +171,7 @@ if __name__=='__main__':
         # CIFAR100 specific normalization constants
         dataset_mean = [0.5070751592371341, 0.48654887331495067, 0.4409178433670344]
         dataset_std = [0.2673342858792403, 0.2564384629170882, 0.27615047132568393]
-        img_size = 256 # Resize CIFAR images for consistency
+        img_size = args.img_size
         transform = transforms.Compose([
             transforms.Resize(img_size),
             transforms.ToTensor(),
@@ -183,7 +184,7 @@ if __name__=='__main__':
             print("Using ImageNet")
             dataset_mean = [0.485, 0.456, 0.406]
             dataset_std = [0.229, 0.224, 0.225]
-            img_size = 256
+            img_size = args.img_size
             transform = transforms.Compose([
                 transforms.Resize(img_size),
                 transforms.ToTensor(),
@@ -203,10 +204,17 @@ if __name__=='__main__':
             if is_grayscale:
                 dataset_mean = [0.5]
                 dataset_std = [0.5]
-                img_size = 256
+                img_size = 224
                 transform = transforms.Compose([
-                    transforms.Resize(img_size),
+                    transforms.Resize((img_size, img_size)),
                     transforms.Grayscale(num_output_channels=1),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=dataset_mean, std=dataset_std)
+                ])
+                transform_crop = transforms.Compose([
+                    transforms.Resize((img_size, img_size)),
+                    transforms.Grayscale(num_output_channels=1),
+                    transforms.RandomCrop(img_size),
                     transforms.ToTensor(),
                     transforms.Normalize(mean=dataset_mean, std=dataset_std)
                 ])
@@ -220,9 +228,15 @@ if __name__=='__main__':
             else:
                 dataset_mean = [0.485, 0.456, 0.406]
                 dataset_std = [0.229, 0.224, 0.225]
-                img_size = 256
+                img_size = 224
                 transform = transforms.Compose([
-                    transforms.Resize(img_size),
+                    transforms.Resize((img_size, img_size)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=dataset_mean, std=dataset_std)
+                ])
+                transform_crop = transforms.Compose([
+                    transforms.Resize((img_size, img_size)),
+                    transforms.RandomCrop(img_size),
                     transforms.ToTensor(),
                     transforms.Normalize(mean=dataset_mean, std=dataset_std)
                 ])
@@ -719,6 +733,77 @@ if __name__=='__main__':
                                 off_diag_mean.append(corr[mask].mean())
                             print(f"  Avg diagonal (self-correlation): {np.mean(diag_mean):.3f}")
                             print(f"  Avg off-diagonal (cross-correlation): {np.mean(off_diag_mean):.3f}")
+
+    if 'classification_report' in args.actions:
+        print("\n=== Generating Classification Report ===")
+        all_preds = []
+        all_targets = []
+        all_certainties = []
+        
+        with torch.inference_mode():
+            for bi, (inputs, targets) in enumerate(tqdm(loader, desc="Classification Report")):
+                inputs = inputs.to(device)
+                targets = targets.to(device)
+                
+                predictions, certainties, _, _ = model(inputs)
+                
+                where_most_certain = certainties[:, 1, :].argmax(dim=1)
+                preds = predictions.argmax(dim=1)[torch.arange(predictions.size(0), device=predictions.device), where_most_certain]
+                
+                all_preds.extend(preds.cpu().numpy())
+                all_targets.extend(targets.cpu().numpy())
+                all_certainties.extend(certainties[:, 1, :].max(dim=1)[0].cpu().numpy())
+        
+        all_preds = np.array(all_preds)
+        all_targets = np.array(all_targets)
+        all_certainties = np.array(all_certainties)
+        
+        overall_accuracy = (all_preds == all_targets).mean()
+        print(f"\nOverall Accuracy: {overall_accuracy:.4f}")
+        
+        print("\nClassification Report:")
+        target_names = [f"Class {i}" for i in range(len(class_labels))] if isinstance(class_labels, list) else class_labels
+        report = classification_report(all_targets, all_preds, target_names=target_names, digits=4)
+        print(report)
+        
+        report_dict = classification_report(all_targets, all_preds, target_names=target_names, output_dict=True)
+        
+        with open(f'{args.output_dir}/classification_report.txt', 'w') as f:
+            f.write(f"Dataset: {args.dataset}\n")
+            f.write(f"Model checkpoint: {args.checkpoint}\n")
+            f.write(f"Image size: {img_size}\n")
+            f.write(f"Inference iterations: {args.inference_iterations}\n")
+            f.write(f"Overall Accuracy: {overall_accuracy:.4f}\n\n")
+            f.write("Classification Report:\n")
+            f.write(report)
+        
+        print(f"\nClassification report saved to {args.output_dir}/classification_report.txt")
+        
+        cm = confusion_matrix(all_targets, all_preds)
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=target_names, yticklabels=target_names)
+        plt.title('Confusion Matrix')
+        plt.xlabel('Predicted')
+        plt.ylabel('True')
+        plt.tight_layout()
+        plt.savefig(f'{args.output_dir}/confusion_matrix.png', dpi=200)
+        plt.savefig(f'{args.output_dir}/confusion_matrix.pdf', dpi=200)
+        plt.close()
+        print(f"Confusion matrix saved to {args.output_dir}/confusion_matrix.png")
+        
+        per_class_acc = cm.diagonal() / cm.sum(axis=1)
+        plt.figure(figsize=(12, 6))
+        plt.bar(range(len(per_class_acc)), per_class_acc)
+        plt.xticks(range(len(per_class_acc)), target_names, rotation=45, ha='right')
+        plt.xlabel('Class')
+        plt.ylabel('Accuracy')
+        plt.title('Per-Class Accuracy')
+        plt.ylim(0, 1)
+        plt.tight_layout()
+        plt.savefig(f'{args.output_dir}/per_class_accuracy.png', dpi=200)
+        plt.savefig(f'{args.output_dir}/per_class_accuracy.pdf', dpi=200)
+        plt.close()
+        print(f"Per-class accuracy saved to {args.output_dir}/per_class_accuracy.png")
 
     if 'videos' in args.actions:
         if not args.data_indices: # If list is empty
