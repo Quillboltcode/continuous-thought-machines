@@ -73,6 +73,7 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default='imagenet', choices=['imagenet', 'ferplusplus', 'rafdb'], help='Dataset to use for analysis.')
     parser.add_argument('--data_root', type=str, default='data/', help='Root directory for dataset.')
     parser.add_argument('--img_size', type=int, default=224, help='Image size for resizing.')
+    parser.add_argument('--plot_every', type=int, default=10, help="How often to plot.")
     
     parser.add_argument('--inference_iterations', type=int, default=50, help="Iterations to use during inference.")
     parser.add_argument('--data_indices', type=int, nargs='+', default=[], help="Use specific indices in validation data for demos, otherwise random.")
