@@ -1,0 +1,14 @@
+[model]
+model = "lstm"
+d_model = 512
+dropout = 0.0
+backbone_type = "resnet18-4"
+pretrained_backbone = "none"
+grayscale = false
+convert_grayscale_to_rgb = false
+d_input = 128
+heads = 4
+iterations = 50
+positional_embedding_type = "none"
+num_layers = 2
+start_type = "zeros"

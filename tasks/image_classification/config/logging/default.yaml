@@ -1,0 +1,22 @@
+[logging]
+log_dir = "logs/scratch"
+save_every = 250
+track_every = 125
+seed = 412
+n_test_batches = 50
+eval_per_epoch = false
+plot_indices = [0]
+compute_flops = false
+use_amp = true
+
+[logging.wandb]
+use_wandb = false
+wandb_project = "continuous-thought-machines-fer"
+wandb_entity = null
+
+[logging.reload]
+reload = false
+reload_model_only = false
+strict_reload = true
+ignore_metrics_when_reloading = false
+save_best_model = true

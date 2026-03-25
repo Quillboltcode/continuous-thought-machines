@@ -1,0 +1,15 @@
+defaults:
+  - model: ctm
+  - data: cifar10
+  - training: default
+  - logging: default
+  - _self_
+
+hydra:
+  run:
+    dir: ${logging.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ${logging.log_dir}/sweeps/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.name}
+  job:
+    name: ${model.model}_${data.dataset}

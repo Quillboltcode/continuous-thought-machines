@@ -1,0 +1,8 @@
+[model]
+model = "ff"
+d_model = 512
+dropout = 0.0
+backbone_type = "resnet18-4"
+pretrained_backbone = "none"
+grayscale = false
+convert_grayscale_to_rgb = false
