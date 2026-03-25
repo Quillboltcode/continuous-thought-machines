@@ -301,8 +301,8 @@ if __name__=='__main__':
                     tracked_predictions.append(predictions.detach().cpu().numpy())
                     tracked_targets.append(targets.detach().cpu().numpy())
                     tracked_certainties.append(certainties.detach().cpu().numpy())
-                    # Track post-activations for synchronization matrix: shape (B, neurons, steps)
-                    tracked_activations.append(np.transpose(post_activations, (0, 2, 1)))  # (B, steps, neurons)
+                    # Track post-activations for synchronization matrix: shape (B, steps, neurons)
+                    tracked_activations.append(np.transpose(post_activations, (1, 0, 2)))  # (B, steps, neurons)
 
                     
 
@@ -746,7 +746,7 @@ if __name__=='__main__':
                 inputs = inputs.to(device)
                 targets = targets.to(device)
                 
-                predictions, certainties, _, _ = model(inputs)
+                predictions, certainties, _ = model(inputs)
                 
                 where_most_certain = certainties[:, 1, :].argmax(dim=1)
                 preds = predictions.argmax(dim=1)[torch.arange(predictions.size(0), device=predictions.device), where_most_certain]
