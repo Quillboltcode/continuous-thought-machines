@@ -1,8 +1,7 @@
-[data]
-dataset = "RAFDB"
-data_root = "data/"
-img_size = 224
-val_split_ratio = 0.0
-use_test_as_val = false
-grayscale = false
-convert_grayscale_to_rgb = false
+dataset: "RAFDB"
+data_root: "data/"
+img_size: 224
+val_split_ratio: 0.0
+use_test_as_val: false
+grayscale: false
+convert_grayscale_to_rgb: false

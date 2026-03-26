@@ -1,29 +1,28 @@
-[model]
-model = "ctm"
-d_model = 512
-dropout = 0.2
-backbone_type = "resnet18-4"
-pretrained_backbone = "imagenet"
-grayscale = false
-convert_grayscale_to_rgb = false
-d_input = 512
-heads = 8
-iterations = 30
-positional_embedding_type = "none"
+model: "ctm"
+d_model: 512
+dropout: 0.2
+backbone_type: "resnet18-4"
+pretrained_backbone: "imagenet"
+grayscale: false
+convert_grayscale_to_rgb: false
+d_input: 512
+heads: 8
+iterations: 30
+positional_embedding_type: "none"
 
-[model.ponder]
-use_ponder_loss = false
-lambda_p = 0.2
-beta = 0.01
-synapse_depth = 4
-n_synch_out = 32
-n_synch_action = 32
-neuron_select_type = "first-last"
-n_random_pairing_self = 0
+ponder:
+  use_ponder_loss: false
+  lambda_p: 0.2
+  beta: 0.01
+  synapse_depth: 4
+  n_synch_out: 32
+  n_synch_action: 32
+  neuron_select_type: "first-last"
+  n_random_pairing_self: 0
 
-[model.memory]
-memory_length = 20
-deep_memory = true
-memory_hidden_dims = 16
-dropout_nlm = 0.0
-do_normalisation = false
+memory:
+  memory_length: 20
+  deep_memory: true
+  memory_hidden_dims: 16
+  dropout_nlm: 0.0
+  do_normalisation: false

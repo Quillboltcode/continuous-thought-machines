@@ -1,0 +1,19 @@
+defaults:
+  - model: ctm
+  - data: rafdb
+  - training: default
+  - logging: default
+  - _self_
+
+data:
+  dataset: RAFDB
+  data_root: /home/quillbolt/Downloads/DATASET
+  val_split_ratio: 0.1
+  grayscale: false
+  convert_grayscale_to_rgb: false
+  img_size: 100
+
+training:
+  batch_size: 8
+
+device: [0]

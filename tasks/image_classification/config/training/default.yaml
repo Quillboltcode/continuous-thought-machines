@@ -1,18 +1,17 @@
-[training]
-batch_size = 64
-batch_size_test = 64
-lr = 3e-4
-training_iterations = 5001
-warmup_steps = 500
-use_scheduler = true
-scheduler_type = "cosine"
-milestones = [8000, 15000, 20000]
-gamma = 0.1
-weight_decay = 0.0
-gradient_clipping = -1.0
-num_workers_train = 1
-use_custom_sampler = false
-do_compile = false
+batch_size: 64
+batch_size_test: 64
+lr: 3e-4
+training_iterations: 5001
+warmup_steps: 500
+use_scheduler: true
+scheduler_type: "cosine"
+milestones: [8000, 15000, 20000]
+gamma: 0.1
+weight_decay: 0.0
+gradient_clipping: -1.0
+num_workers_train: 1
+use_custom_sampler: false
+do_compile: false
 
-[training.exclusions]
-weight_decay_exclusion_list = []
+exclusions:
+  weight_decay_exclusion_list: []

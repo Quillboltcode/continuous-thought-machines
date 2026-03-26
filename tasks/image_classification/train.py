@@ -16,6 +16,9 @@ if torch.cuda.is_available():
 import torch.nn as nn
 from tqdm.auto import tqdm
 
+import hydra
+from omegaconf import DictConfig, OmegaConf
+
 from tasks.image_classification.plotting import (
     plot_neural_dynamics,
     make_classification_gif,
@@ -62,6 +65,64 @@ warnings.filterwarnings(
     UserWarning,
     r"^PIL\.TiffImagePlugin$",  # Using a regular expression to match the module.
 )
+
+
+def flatten_config(cfg: DictConfig, prefix: str = '') -> dict:
+    """Flatten nested config into flat dict with underscore-separated keys.
+    Special handling for keys that should not have their parent as prefix."""
+    result = {}
+    for key, value in cfg.items():
+        if isinstance(value, DictConfig):
+            # For certain keys, flatten directly without adding prefix
+            if prefix == '' and key in ['model', 'data', 'training', 'logging']:
+                result.update(flatten_config(value, ''))
+            # Handle wandb and reload specially - flatten their contents to top level
+            elif key in ['wandb', 'reload']:
+                result.update(flatten_config(value, ''))
+            else:
+                new_key = f"{prefix}_{key}" if prefix else key
+                result.update(flatten_config(value, new_key))
+        else:
+            new_key = f"{prefix}_{key}" if prefix else key
+            result[new_key] = value
+    
+    # Post-processing: rename nested model keys to match expected argument names
+    if prefix == '':
+        key_renames = {
+            'ponder_n_synch_out': 'n_synch_out',
+            'ponder_n_synch_action': 'n_synch_action',
+            'ponder_synapse_depth': 'synapse_depth',
+            'ponder_neuron_select_type': 'neuron_select_type',
+            'ponder_n_random_pairing_self': 'n_random_pairing_self',
+            'ponder_use_ponder_loss': 'use_ponder_loss',
+            'ponder_lambda_p': 'lambda_p',
+            'ponder_beta': 'beta',
+            'memory_memory_length': 'memory_length',
+            'memory_deep_memory': 'deep_memory',
+            'memory_memory_hidden_dims': 'memory_hidden_dims',
+            'memory_dropout_nlm': 'dropout_nlm',
+            'memory_do_normalisation': 'do_normalisation',
+            'gated_exit_strategy': 'exit_strategy',
+            'gated_exit_threshold': 'exit_threshold',
+            'gated_min_steps': 'min_steps',
+            'gated_loss_type': 'loss_type',
+            'innovations_use_gsh': 'use_gsh',
+            'innovations_use_hne': 'use_hne',
+            'innovations_use_sanp': 'use_sanp',
+            'innovations_hne_group_configs': 'hne_group_configs',
+            'innovations_hne_group_configs_file': 'hne_group_configs_file',
+            'innovations_sanp_init_top_k': 'sanp_init_top_k',
+            'losses_use_psl': 'use_psl',
+            'losses_lambda_psl': 'lambda_psl',
+            'losses_use_ctcs': 'use_ctcs',
+            'losses_lambda_ctcs': 'lambda_ctcs',
+            'exclusions_weight_decay_exclusion_list': 'weight_decay_exclusion_list',
+        }
+        for old_key, new_key in key_renames.items():
+            if old_key in result:
+                result[new_key] = result.pop(old_key)
+    
+    return result
 
 
 def parse_args():
@@ -489,16 +550,19 @@ def parse_args():
     return args
 
 
-if __name__ == "__main__":
-    # Hosuekeeping
-    args = parse_args()
-
+@hydra.main(config_path="config", config_name="config", version_base=None)
+def main(cfg: DictConfig):
+    args = flatten_config(cfg)
+    args = type('Args', (), args)()
+    
     # Parse hne_group_configs if provided
-    if args.hne_group_configs is not None:
+    if hasattr(args, 'hne_group_configs') and args.hne_group_configs is not None:
         args.hne_group_configs = json.loads(args.hne_group_configs)
-    elif args.hne_group_configs_file is not None:
+    elif hasattr(args, 'hne_group_configs_file') and args.hne_group_configs_file is not None:
         with open(args.hne_group_configs_file, 'r') as f:
             args.hne_group_configs = json.load(f)
+    else:
+        args.hne_group_configs = None
 
     # Set up descriptive run name for experiments
     run_name = f"{args.model}_{args.dataset}_bs{args.batch_size}_lr{args.lr}"
@@ -507,8 +571,7 @@ if __name__ == "__main__":
         if args.exit_strategy == "certainty":
             run_name += f"-thr{args.exit_threshold}"
         elif args.exit_strategy in ("ponder", "normal", "learned"):
-            run_name += f"-lp{args.lambda_p}-beta{args.beta}"
-        run_name += f"_loss={args.loss_type}"
+            run_name += f"_loss={args.loss_type}"
     
     # Update log_dir to be unique based on run_name if it's the default or generic
     if "scratch" in args.log_dir or args.log_dir == "logs":
@@ -518,14 +581,17 @@ if __name__ == "__main__":
         os.makedirs(args.log_dir)
 
     # Set up logging
-    wandb.init(
-        project="continuous-thought-machines-fer",
-        dir=args.log_dir,
-        config=vars(args),
-        name=run_name,
-        reinit=True,
-    )
-    wandb.log({"Logging initialized": True})
+    if args.use_wandb:
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            dir=args.log_dir,
+            config=OmegaConf.to_container(cfg, resolve=True),
+            name=run_name,
+            reinit=True,
+        )
+        wandb.log({"Logging initialized": True})
+    
     assert args.dataset in [
         "cifar10",
         "cifar100",
@@ -549,7 +615,7 @@ if __name__ == "__main__":
             args.img_size,
         )
     )
-
+    
     # Log class distribution to wandb
     if args.log_dataset_distribution:
         train_class_dist = compute_class_distribution(train_data)
@@ -652,14 +718,16 @@ if __name__ == "__main__":
 
     # Always log params, FLOPs is optional
     print(f"Total params: {sum(p.numel() for p in model.parameters()):,}")
-    wandb.log({"Total Parameters": sum(p.numel() for p in model.parameters())})
+    if args.use_wandb:
+        wandb.log({"Total Parameters": sum(p.numel() for p in model.parameters())})
 
     if args.compute_flops:
         input_channels = 1 if args.grayscale and not args.convert_grayscale_to_rgb else 3
         metrics = compute_model_metrics(model, args.model, args.dataset, input_channels=input_channels)
         if metrics['total_flops'] > 0:
             print(f"Total FLOPs: {metrics['total_flops']:,}")
-            wandb.log({"Total FLOPs": metrics['total_flops'], "FLOPs Breakdown": metrics['flops_breakdown']})
+            if args.use_wandb:
+                wandb.log({"Total FLOPs": metrics['total_flops'], "FLOPs Breakdown": metrics['flops_breakdown']})
 
     decay_params = []
     no_decay_params = []
@@ -1831,7 +1899,13 @@ if __name__ == "__main__":
         final_test_acc /= final_test_count
         final_test_loss /= final_test_count
         print(f"Final Test Accuracy: {final_test_acc:.4f}, Test Loss: {final_test_loss:.4f}")
-        wandb.log({
-            "Final Test Accuracy": final_test_acc,
-            "Final Test Loss": final_test_loss,
-        }, step=args.training_iterations)
+        if args.use_wandb:
+            wandb.log({
+                "Final Test Accuracy": final_test_acc,
+                "Final Test Loss": final_test_loss,
+            }, step=args.training_iterations)
+            wandb.finish()
+
+
+if __name__ == "__main__":
+    main()

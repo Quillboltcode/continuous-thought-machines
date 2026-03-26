@@ -42,14 +42,60 @@ warnings.filterwarnings("ignore", "UserWarning: Truncated File Read", UserWarnin
 
 
 def flatten_config(cfg: DictConfig, prefix: str = '') -> dict:
-    """Flatten nested config into flat dict with underscore-separated keys."""
+    """Flatten nested config into flat dict with underscore-separated keys.
+    Special handling for keys that should not have their parent as prefix."""
     result = {}
     for key, value in cfg.items():
-        new_key = f"{prefix}_{key}" if prefix else key
         if isinstance(value, DictConfig):
-            result.update(flatten_config(value, new_key))
+            # For certain keys, flatten directly without adding prefix
+            if prefix == '' and key in ['model', 'data', 'training', 'logging']:
+                result.update(flatten_config(value, ''))
+            # Handle wandb and reload specially - flatten their contents to top level
+            elif key in ['wandb', 'reload']:
+                result.update(flatten_config(value, ''))
+            else:
+                new_key = f"{prefix}_{key}" if prefix else key
+                result.update(flatten_config(value, new_key))
         else:
+            new_key = f"{prefix}_{key}" if prefix else key
             result[new_key] = value
+    
+    # Post-processing: rename nested model keys to match expected argument names
+    if prefix == '':
+        key_renames = {
+            'ponder_n_synch_out': 'n_synch_out',
+            'ponder_n_synch_action': 'n_synch_action',
+            'ponder_synapse_depth': 'synapse_depth',
+            'ponder_neuron_select_type': 'neuron_select_type',
+            'ponder_n_random_pairing_self': 'n_random_pairing_self',
+            'ponder_use_ponder_loss': 'use_ponder_loss',
+            'ponder_lambda_p': 'lambda_p',
+            'ponder_beta': 'beta',
+            'memory_memory_length': 'memory_length',
+            'memory_deep_memory': 'deep_memory',
+            'memory_memory_hidden_dims': 'memory_hidden_dims',
+            'memory_dropout_nlm': 'dropout_nlm',
+            'memory_do_normalisation': 'do_normalisation',
+            'gated_exit_strategy': 'exit_strategy',
+            'gated_exit_threshold': 'exit_threshold',
+            'gated_min_steps': 'min_steps',
+            'gated_loss_type': 'loss_type',
+            'innovations_use_gsh': 'use_gsh',
+            'innovations_use_hne': 'use_hne',
+            'innovations_use_sanp': 'use_sanp',
+            'innovations_hne_group_configs': 'hne_group_configs',
+            'innovations_hne_group_configs_file': 'hne_group_configs_file',
+            'innovations_sanp_init_top_k': 'sanp_init_top_k',
+            'losses_use_psl': 'use_psl',
+            'losses_lambda_psl': 'lambda_psl',
+            'losses_use_ctcs': 'use_ctcs',
+            'losses_lambda_ctcs': 'lambda_ctcs',
+            'exclusions_weight_decay_exclusion_list': 'weight_decay_exclusion_list',
+        }
+        for old_key, new_key in key_renames.items():
+            if old_key in result:
+                result[new_key] = result.pop(old_key)
+    
     return result
 
 # --- DDP Setup Functions ---
@@ -61,23 +107,20 @@ def setup_ddp():
         os.environ['MASTER_PORT'] = '12355'
         os.environ['LOCAL_RANK'] = '0'
         print("Running in non-distributed mode (simulated DDP setup).")
-        if not torch.cuda.is_available() or int(os.environ['WORLD_SIZE']) == 1:
-            dist.init_process_group(backend='gloo')
-            print("Initialized process group with Gloo backend.")
-            rank = int(os.environ['RANK'])
-            world_size = int(os.environ['WORLD_SIZE'])
-            local_rank = int(os.environ['LOCAL_RANK'])
-            return rank, world_size, local_rank
 
-    dist.init_process_group(backend='nccl')
     rank = int(os.environ['RANK'])
     world_size = int(os.environ['WORLD_SIZE'])
     local_rank = int(os.environ['LOCAL_RANK'])
+
+    # Use NCCL for GPU, Gloo for CPU
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
-        print(f"Rank {rank} setup on GPU {local_rank}")
+        dist.init_process_group(backend='nccl')
+        print(f"Initialized NCCL backend. Rank {rank} on GPU {local_rank}")
     else:
-        print(f"Rank {rank} setup on CPU")
+        dist.init_process_group(backend='gloo')
+        print(f"Initialized Gloo backend. Rank {rank} on CPU")
+
     return rank, world_size, local_rank
 
 def cleanup_ddp():
