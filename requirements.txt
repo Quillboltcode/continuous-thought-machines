@@ -1,6 +1,8 @@
 numpy
 torch
 torchvision
+timm
+transformers
 matplotlib
 seaborn
 tqdm

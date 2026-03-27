@@ -5,6 +5,7 @@ import math
 
 from models.modules import ParityBackbone, SynapseUNET, Squeeze, SuperLinear, LearnableFourierPositionalEncoding, MultiLearnableFourierPositionalEncoding, CustomRotationalEmbedding, CustomRotationalEmbedding1D, ShallowWide
 from models.resnet import prepare_resnet_backbone
+from models.vit_clip_backbone import prepare_vit_backbone, prepare_clip_backbone
 from models.utils import compute_normalized_entropy
 
 from models.constants import (
@@ -253,24 +254,20 @@ class ContinuousThoughtMachine(nn.Module):
     # --- Setup Methods ---
 
     def set_initial_rgb(self):
-        """
-        This is largely to accommodate training on grayscale images and is legacy, but it
-        doesn't hurt the model in any way that we can tell.
-        """
         if 'resnet' in self.backbone_type:
             if self.grayscale:
                 self.initial_rgb = nn.Identity()
             else:
-                self.initial_rgb = nn.LazyConv2d(3, 1, 1) # Adapts input channels lazily
+                self.initial_rgb = nn.LazyConv2d(3, 1, 1)
+        elif 'vit' in self.backbone_type or 'clip' in self.backbone_type:
+            if self.grayscale:
+                self.initial_rgb = lambda x: x.repeat(1, 3, 1, 1)
+            else:
+                self.initial_rgb = nn.Identity()
         else:
             self.initial_rgb = nn.Identity()
 
     def get_d_backbone(self):
-        """
-        Get the dimensionality of the backbone output, to be used for positional embedding setup.
-
-        This is a little bit complicated for resnets, but the logic should be easy enough to read below.        
-        """
         if self.backbone_type == 'shallow-wide':
             return 2048
         elif self.backbone_type == 'parity_backbone':
@@ -290,15 +287,23 @@ class ContinuousThoughtMachine(nn.Module):
                 elif self.backbone_type.split('-')[1]=='4': return 2048
                 else:
                     raise NotImplementedError
+        elif self.backbone_type == 'vit-tiny':
+            return 192
+        elif 'clip' in self.backbone_type:
+            if self.backbone_type == 'clip-small':
+                return 768
+            elif self.backbone_type == 'clip-base':
+                return 768
+            elif self.backbone_type == 'clip-large':
+                return 1024
+            else:
+                raise NotImplementedError
         elif self.backbone_type == 'none':
             return None
         else:
             raise ValueError(f"Invalid backbone_type: {self.backbone_type}")
 
     def set_backbone(self):
-        """
-        Set the backbone module based on the specified type.
-        """
         if self.backbone_type == 'shallow-wide':
             self.backbone = ShallowWide()
         elif self.backbone_type == 'parity_backbone':
@@ -306,6 +311,10 @@ class ContinuousThoughtMachine(nn.Module):
             self.backbone = ParityBackbone(n_embeddings=2, d_embedding=d_backbone)
         elif 'resnet' in self.backbone_type:
             self.backbone = prepare_resnet_backbone(self.backbone_type, pretrained=self.pretrained_backbone, grayscale=self.grayscale)
+        elif self.backbone_type == 'vit-tiny':
+            self.backbone = prepare_vit_backbone(self.backbone_type, pretrained=self.pretrained_backbone, grayscale=self.grayscale)
+        elif 'clip' in self.backbone_type:
+            self.backbone = prepare_clip_backbone(self.backbone_type, pretrained=self.pretrained_backbone, grayscale=self.grayscale)
         elif self.backbone_type == 'none':
             self.backbone = nn.Identity()
         else:
