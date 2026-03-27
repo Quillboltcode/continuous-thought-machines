@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import random
@@ -18,13 +19,11 @@ from torch.utils.data.distributed import DistributedSampler
 from utils.samplers import FastRandomDistributedSampler 
 from tqdm.auto import tqdm
 
-import hydra
-from omegaconf import DictConfig, OmegaConf
-
 from tasks.image_classification.train import get_dataset
 from models.factories import create_model
 from models.ctm_with_innovations import PredictiveSynchronyLoss, CrossTickContrastiveLoss
 
+# Plotting/Utils Imports
 from utils.housekeeping import set_seed, zip_python_code
 from utils.losses import image_classification_loss
 from utils.schedulers import WarmupCosineAnnealingLR, WarmupMultiStepLR, warmup
@@ -41,62 +40,132 @@ warnings.filterwarnings("ignore", "UserWarning: Metadata Warning", UserWarning, 
 warnings.filterwarnings("ignore", "UserWarning: Truncated File Read", UserWarning, r"^PIL\.TiffImagePlugin$")
 
 
-def flatten_config(cfg: DictConfig, prefix: str = '') -> dict:
-    """Flatten nested config into flat dict with underscore-separated keys.
-    Special handling for keys that should not have their parent as prefix."""
-    result = {}
-    for key, value in cfg.items():
-        if isinstance(value, DictConfig):
-            # For certain keys, flatten directly without adding prefix
-            if prefix == '' and key in ['model', 'data', 'training', 'logging']:
-                result.update(flatten_config(value, ''))
-            # Handle wandb and reload specially - flatten their contents to top level
-            elif key in ['wandb', 'reload']:
-                result.update(flatten_config(value, ''))
-            else:
-                new_key = f"{prefix}_{key}" if prefix else key
-                result.update(flatten_config(value, new_key))
-        else:
-            new_key = f"{prefix}_{key}" if prefix else key
-            result[new_key] = value
-    
-    # Post-processing: rename nested model keys to match expected argument names
-    if prefix == '':
-        key_renames = {
-            'ponder_n_synch_out': 'n_synch_out',
-            'ponder_n_synch_action': 'n_synch_action',
-            'ponder_synapse_depth': 'synapse_depth',
-            'ponder_neuron_select_type': 'neuron_select_type',
-            'ponder_n_random_pairing_self': 'n_random_pairing_self',
-            'ponder_use_ponder_loss': 'use_ponder_loss',
-            'ponder_lambda_p': 'lambda_p',
-            'ponder_beta': 'beta',
-            'memory_memory_length': 'memory_length',
-            'memory_deep_memory': 'deep_memory',
-            'memory_memory_hidden_dims': 'memory_hidden_dims',
-            'memory_dropout_nlm': 'dropout_nlm',
-            'memory_do_normalisation': 'do_normalisation',
-            'gated_exit_strategy': 'exit_strategy',
-            'gated_exit_threshold': 'exit_threshold',
-            'gated_min_steps': 'min_steps',
-            'gated_loss_type': 'loss_type',
-            'innovations_use_gsh': 'use_gsh',
-            'innovations_use_hne': 'use_hne',
-            'innovations_use_sanp': 'use_sanp',
-            'innovations_hne_group_configs': 'hne_group_configs',
-            'innovations_hne_group_configs_file': 'hne_group_configs_file',
-            'innovations_sanp_init_top_k': 'sanp_init_top_k',
-            'losses_use_psl': 'use_psl',
-            'losses_lambda_psl': 'lambda_psl',
-            'losses_use_ctcs': 'use_ctcs',
-            'losses_lambda_ctcs': 'lambda_ctcs',
-            'exclusions_weight_decay_exclusion_list': 'weight_decay_exclusion_list',
-        }
-        for old_key, new_key in key_renames.items():
-            if old_key in result:
-                result[new_key] = result.pop(old_key)
-    
-    return result
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    # Model Selection
+    parser.add_argument('--model', type=str, required=True, 
+                        choices=['ctm', 'ctm_gated', 'ctm_with_innovations', 'lstm', 'ff'], 
+                        help='Model type to train.')
+
+    # Model Architecture - Common
+    parser.add_argument('--d_model', type=int, default=512, help='Dimension of the model.')
+    parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate.')
+    parser.add_argument('--backbone_type', type=str, default='resnet18-4', help='Type of backbone featureiser.')
+    parser.add_argument('--pretrained_backbone', type=str, default='none', 
+                        choices=['none', 'imagenet', 'ms-celeba'], help='Use a pretrained backbone.')
+    parser.add_argument('--grayscale', action=argparse.BooleanOptionalAction, default=False, help='Use grayscale images.')
+    parser.add_argument('--convert_grayscale_to_rgb', action=argparse.BooleanOptionalAction, default=False, 
+                        help='Convert grayscale images to 3-channel RGB.')
+
+    # CTM / LSTM specific
+    parser.add_argument('--d_input', type=int, default=128, help='Dimension of the input (CTM, LSTM).')
+    parser.add_argument('--heads', type=int, default=4, help='Number of attention heads (CTM, LSTM).') 
+    parser.add_argument('--iterations', type=int, default=50, help='Number of internal ticks (CTM, LSTM).') 
+    parser.add_argument('--positional_embedding_type', type=str, default='none', 
+                        choices=['none', 'learnable-fourier', 'multi-learnable-fourier', 'custom-rotational', 'custom-rotational-1d'],
+                        help='Type of positional embedding.')
+
+    # CTM specific
+    parser.add_argument('--use_ponder_loss', action=argparse.BooleanOptionalAction, default=False, help='Use PonderLoss for CTM.')
+    parser.add_argument('--lambda_p', type=float, default=0.2, help='Lambda for PonderLoss.')
+    parser.add_argument('--beta', type=float, default=0.01, help='Beta for ponder/loop loss.')
+    parser.add_argument('--synapse_depth', type=int, default=4, help='Depth of U-NET for synapse.')
+    parser.add_argument('--n_synch_out', type=int, default=32, help='Number of neurons for output synch.')
+    parser.add_argument('--n_synch_action', type=int, default=32, help='Number of neurons for action synch.')
+    parser.add_argument('--neuron_select_type', type=str, default='first-last', 
+                        choices=['first-last', 'random', 'random-pairing'],
+                        help='Protocol for selecting neuron subset.')
+    parser.add_argument('--n_random_pairing_self', type=int, default=0, help='Self-to-self synch pairs.')
+    parser.add_argument('--memory_length', type=int, default=25, help='Pre-activation history length.')
+    parser.add_argument('--deep_memory', action=argparse.BooleanOptionalAction, default=True, help='Use deep memory.')
+    parser.add_argument('--memory_hidden_dims', type=int, default=4, help='Hidden dims for deep memory.')
+    parser.add_argument('--dropout_nlm', type=float, default=None, help='Dropout for NLMs.')
+    parser.add_argument('--do_normalisation', action=argparse.BooleanOptionalAction, default=False, 
+                        help='Apply normalization in NLMs.')
+
+    # CTM-Gated specific
+    parser.add_argument('--exit_strategy', type=str, default='certainty',
+                        choices=['certainty', 'ponder', 'normal', 'learned', 'none'],
+                        help='Exit strategy for CTM-Gated.')
+    parser.add_argument('--exit_threshold', type=float, default=0.9, help='Certainty threshold.')
+    parser.add_argument('--min_steps', type=int, default=1, help='Minimum steps before early exit.')
+    parser.add_argument('--loss_type', type=str, default='standard', choices=['standard', 'ponder', 'loop'],
+                        help='Loss type for CTM-Gated.')
+
+    # CTM-Innovations specific
+    parser.add_argument('--use_gsh', action=argparse.BooleanOptionalAction, default=False, 
+                        help='Enable Gated Synchronization Highway.')
+    parser.add_argument('--use_hne', action=argparse.BooleanOptionalAction, default=False, 
+                        help='Enable Hierarchical NLM Ensembles.')
+    parser.add_argument('--use_sanp', action=argparse.BooleanOptionalAction, default=False, 
+                        help='Enable Sparse Adaptive Neuron Pairing.')
+    parser.add_argument('--hne_group_configs', type=str, default=None, help='JSON string for HNE group configs.')
+    parser.add_argument('--hne_group_configs_file', type=str, default=None, help='Path to JSON file with HNE configs.')
+    parser.add_argument('--sanp_init_top_k', type=int, default=1000, help='Candidate pairs for SANP.')
+    parser.add_argument('--use_psl', action=argparse.BooleanOptionalAction, default=False, 
+                        help='Use Predictive Synchrony Loss.')
+    parser.add_argument('--lambda_psl', type=float, default=0.1, help='Weight for PSL.')
+    parser.add_argument('--use_ctcs', action=argparse.BooleanOptionalAction, default=False, 
+                        help='Use Cross-Tick Contrastive Synchronization.')
+    parser.add_argument('--lambda_ctcs', type=float, default=0.1, help='Weight for CTCS.')
+
+    # LSTM specific
+    parser.add_argument('--num_layers', type=int, default=2, help='Number of LSTM layers.')
+    parser.add_argument('--start_type', type=str, default='zeros', choices=['zeros', 'random'], 
+                        help='Initial hidden state type.')
+
+    # Training 
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training (per GPU).')
+    parser.add_argument('--batch_size_test', type=int, default=32, help='Batch size for testing.')
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate.')
+    parser.add_argument('--training_iterations', type=int, default=100001, help='Number of training iterations.')
+    parser.add_argument('--warmup_steps', type=int, default=5000, help='Warmup steps.')
+    parser.add_argument('--use_scheduler', action=argparse.BooleanOptionalAction, default=True, help='Use LR scheduler.')
+    parser.add_argument('--scheduler_type', type=str, default='cosine', choices=['multistep', 'cosine'])
+    parser.add_argument('--milestones', type=int, default=[8000, 15000, 20000], nargs='+')
+    parser.add_argument('--gamma', type=float, default=0.1)
+    parser.add_argument('--weight_decay', type=float, default=0.0)
+    parser.add_argument('--weight_decay_exclusion_list', type=str, nargs='+', default=[])
+    parser.add_argument('--gradient_clipping', type=float, default=-1)
+    parser.add_argument('--num_workers_train', type=int, default=1)
+    parser.add_argument('--use_custom_sampler', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--do_compile', action=argparse.BooleanOptionalAction, default=False)
+
+    # Housekeeping 
+    parser.add_argument('--log_dir', type=str, default='logs/scratch')
+    parser.add_argument('--dataset', type=str, default='cifar10',
+                        choices=['cifar10', 'cifar100', 'imagenet', 'RAFDB', 'FerPlusPlus', 'affectnet'])
+    parser.add_argument('--data_root', type=str, default='data/')
+    parser.add_argument('--img_size', type=int, default=100)
+    parser.add_argument('--save_every', type=int, default=1000)
+    parser.add_argument('--seed', type=int, default=412)
+    parser.add_argument('--reload', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--reload_model_only', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--strict_reload', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--ignore_metrics_when_reloading', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--val_split_ratio', type=float, default=0.1)
+    parser.add_argument('--use_test_as_val', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--save_best_model', action=argparse.BooleanOptionalAction, default=False)
+
+    # Tracking 
+    parser.add_argument('--track_every', type=int, default=1000)
+    parser.add_argument('--n_test_batches', type=int, default=20)
+    parser.add_argument('--eval_per_epoch', action=argparse.BooleanOptionalAction, default=False,
+                        help="Evaluate on full validation set after each epoch. Automatically sets n_test_batches=-1 and calculates track_every based on dataset size.")
+    parser.add_argument('--plot_indices', type=int, default=[0], nargs='+')
+    parser.add_argument('--compute_flops', action=argparse.BooleanOptionalAction, default=False)
+
+    # Precision
+    parser.add_argument('--use_amp', action=argparse.BooleanOptionalAction, default=False)
+
+    # Logging
+    parser.add_argument('--use_wandb', action=argparse.BooleanOptionalAction, default=False, help='Use Weights & Biases logging.')
+    parser.add_argument('--wandb_project', type=str, default='continuous-thought-machines-fer', help='W&B project name.')
+    parser.add_argument('--wandb_entity', type=str, default=None, help='W&B entity/team name.')
+
+    args = parser.parse_args()
+    return args
 
 # --- DDP Setup Functions ---
 def setup_ddp():
@@ -107,20 +176,23 @@ def setup_ddp():
         os.environ['MASTER_PORT'] = '12355'
         os.environ['LOCAL_RANK'] = '0'
         print("Running in non-distributed mode (simulated DDP setup).")
+        if not torch.cuda.is_available() or int(os.environ['WORLD_SIZE']) == 1:
+            dist.init_process_group(backend='gloo')
+            print("Initialized process group with Gloo backend.")
+            rank = int(os.environ['RANK'])
+            world_size = int(os.environ['WORLD_SIZE'])
+            local_rank = int(os.environ['LOCAL_RANK'])
+            return rank, world_size, local_rank
 
+    dist.init_process_group(backend='nccl')
     rank = int(os.environ['RANK'])
     world_size = int(os.environ['WORLD_SIZE'])
     local_rank = int(os.environ['LOCAL_RANK'])
-
-    # Use NCCL for GPU, Gloo for CPU
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend='nccl')
-        print(f"Initialized NCCL backend. Rank {rank} on GPU {local_rank}")
+        print(f"Rank {rank} setup on GPU {local_rank}")
     else:
-        dist.init_process_group(backend='gloo')
-        print(f"Initialized Gloo backend. Rank {rank} on CPU")
-
+        print(f"Rank {rank} setup on CPU")
     return rank, world_size, local_rank
 
 def cleanup_ddp():
@@ -133,60 +205,64 @@ def is_main_process(rank):
 # --- End DDP Setup ---
 
 
-@hydra.main(config_path="config", config_name="config", version_base=None)
-def main(cfg: DictConfig):
-    args = flatten_config(cfg)
-    args = type('Args', (), args)()
-    
-    if hasattr(cfg.model, 'innovations') and cfg.model.innovations.get('hne_group_configs_file'):
-        with open(cfg.model.innovations.hne_group_configs_file, 'r') as f:
+if __name__=='__main__':
+    args = parse_args()
+
+    # Parse hne_group_configs
+    if args.hne_group_configs is not None:
+        args.hne_group_configs = json.loads(args.hne_group_configs)
+    elif args.hne_group_configs_file is not None:
+        with open(args.hne_group_configs_file, 'r') as f:
             args.hne_group_configs = json.load(f)
-    elif hasattr(cfg.model, 'innovations') and cfg.model.innovations.get('hne_group_configs'):
-        args.hne_group_configs = cfg.model.innovations.hne_group_configs
-    else:
-        args.hne_group_configs = None
 
     rank, world_size, local_rank = setup_ddp()
 
     set_seed(args.seed, False)
 
+    # Rank 0 handles directory creation
     if is_main_process(rank):
         if not os.path.exists(args.log_dir): os.makedirs(args.log_dir)
         zip_python_code(f'{args.log_dir}/repo_state.zip')
         with open(f'{args.log_dir}/args.txt', 'w') as f:
-            print(OmegaConf.to_yaml(cfg), file=f)
+            print(args, file=f)
         
+        # Initialize W&B
         if args.use_wandb:
             run_name = f"{args.model}_{args.dataset}_bs{args.batch_size}_lr{args.lr}"
             wandb.init(
                 project=args.wandb_project,
                 entity=args.wandb_entity,
                 dir=args.log_dir,
-                config=OmegaConf.to_container(cfg, resolve=True),
+                config=vars(args),
                 name=run_name,
                 reinit=True,
             )
             wandb.log({"Logging initialized": True})
     if world_size > 1: dist.barrier()
 
+    # Data Loading
     train_data, val_data, test_data, class_labels, dataset_mean, dataset_std = get_dataset(
         args.dataset, args.data_root, args.val_split_ratio, args.use_test_as_val,
         args.grayscale, args.convert_grayscale_to_rgb, args.img_size
     )
 
+    # Setup Samplers
     train_sampler = (FastRandomDistributedSampler(train_data, num_replicas=world_size, rank=rank, seed=args.seed, epoch_steps=int(10e10))
                      if args.use_custom_sampler else
                      DistributedSampler(train_data, num_replicas=world_size, rank=rank, shuffle=True, seed=args.seed))
     
+    # Use val_data for validation if available, else test_data
     eval_data = val_data if val_data is not None else test_data
     eval_sampler = DistributedSampler(eval_data, num_replicas=world_size, rank=rank, shuffle=False, seed=args.seed)
 
+    # Auto-calculate epoch-based validation if requested
     if args.eval_per_epoch and is_main_process(rank):
         iterations_per_epoch = len(train_data) // args.batch_size
         args.track_every = iterations_per_epoch
         args.n_test_batches = -1
         print(f"[INFO] Eval per epoch enabled: track_every={args.track_every} (iterations/epoch), n_test_batches={args.n_test_batches} (full validation)")
 
+    # Setup DataLoaders
     trainloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, sampler=train_sampler,
                                               num_workers=args.num_workers_train, pin_memory=True, drop_last=True)
     evalloader = torch.utils.data.DataLoader(eval_data, batch_size=args.batch_size_test, sampler=eval_sampler,
