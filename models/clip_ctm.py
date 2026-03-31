@@ -102,7 +102,7 @@ class CLIPCTM(ContinuousThoughtMachine):
             n_tok = self.n_patches
             if use_text_features and hasattr(self, 'text_tokens'):
                 n_tok += self.text_tokens.shape[0]
-            self.kv_proj(torch.zeros(1, n_tok, self.clip_dim))
+            self.kv_proj(torch.zeros(1, n_tok, self.clip_dim, dtype=torch.float32))
 
     # ------------------------------------------------------------------
     # compute_features — the single override that wires CLIP → CTM
@@ -116,12 +116,12 @@ class CLIPCTM(ContinuousThoughtMachine):
         x = (x - mean) / std
 
         with torch.no_grad():
-            tokens = self._extract_vit_patch_tokens(x)  # (B, N_patches, clip_dim)
+            tokens = self._extract_vit_patch_tokens(x).float()  # (B, N_patches, clip_dim)
 
             if self.use_text_features:
-                text = self.text_tokens.unsqueeze(0).expand(B, -1, -1)
+                text = self.text_tokens.unsqueeze(0).expand(B, -1, -1).float()
                 if self.text_proj is not None:
-                    text = self.text_proj(text.float())
+                    text = self.text_proj(text)
                 tokens = torch.cat([tokens, text], dim=1)  # image first, text second
 
         kv = self.kv_proj(tokens)  # LazyLinear handles CLIP dim → d_input
