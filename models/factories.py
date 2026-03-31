@@ -3,6 +3,7 @@ from models.ctm import ContinuousThoughtMachine
 from models.ctm_gated import CTMGated, CTMGatedLoss
 from models.ctm_with_innovations import CTMWithInnovations
 from models.clip_ctm import CLIPCTM
+from models.ctm_FwPKM import CTMFwPKMNeuralComputer
 from models.lstm import LSTMBaseline
 from models.ff import FFBaseline
 
@@ -139,6 +140,36 @@ def create_model(args, prediction_reshaper=None):
             n_random_pairing_self=args.n_random_pairing_self,
             pretrained_backbone=args.pretrained_backbone,
             grayscale=args.grayscale,
+        )
+    elif args.model == "ctm_fwpkm":
+        model = CTMFwPKMNeuralComputer(
+            iterations=args.iterations,
+            d_model=args.d_model,
+            d_input=args.d_input,
+            heads=args.heads,
+            n_synch_out=args.n_synch_out,
+            n_synch_action=args.n_synch_action,
+            synapse_depth=args.synapse_depth,
+            memory_length=args.memory_length,
+            deep_nlms=args.deep_memory,
+            memory_hidden_dims=args.memory_hidden_dims,
+            do_layernorm_nlm=args.do_normalisation,
+            backbone_type=args.backbone_type,
+            pretrained_backbone=args.pretrained_backbone,
+            positional_embedding_type=args.positional_embedding_type,
+            out_dims=args.out_dims,
+            prediction_reshaper=prediction_reshaper,
+            dropout=args.dropout,
+            dropout_nlm=args.dropout_nlm,
+            neuron_select_type=args.neuron_select_type,
+            n_random_pairing_self=args.n_random_pairing_self,
+            grayscale=args.grayscale,
+            fwpkm_d_key=args.fwpkm_d_key,
+            fwpkm_d_val=args.fwpkm_d_val,
+            fwpkm_n_mem=args.fwpkm_n_mem,
+            fwpkm_top_k=args.fwpkm_top_k,
+            fwpkm_lr=args.fwpkm_lr,
+            fwpkm_chunk_size=args.fwpkm_chunk_size,
         )
     elif args.model == "lstm":
         model = LSTMBaseline(

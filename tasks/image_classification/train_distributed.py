@@ -45,7 +45,7 @@ def parse_args():
 
     # Model Selection
     parser.add_argument('--model', type=str, required=True,
-                        choices=['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'lstm', 'ff'],
+                        choices=['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'ctm_fwpkm', 'lstm', 'ff'],
                         help='Model type to train.')
 
     # CLIP-CTM specific
@@ -58,6 +58,14 @@ def parse_args():
     parser.add_argument('--clip_dtype', type=str, default='float16',
                         choices=['float16', 'float32', 'fp16', 'fp32'],
                         help='Precision for frozen CLIP parameters (clip_ctm).')
+
+    # CTM-FwPKM specific
+    parser.add_argument('--fwpkm_d_key', type=int, default=64, help='FwPKM key dimension (ctm_fwpkm).')
+    parser.add_argument('--fwpkm_d_val', type=int, default=128, help='FwPKM value dimension (ctm_fwpkm).')
+    parser.add_argument('--fwpkm_n_mem', type=int, default=1024, help='FwPKM memory slots, must be perfect square (ctm_fwpkm).')
+    parser.add_argument('--fwpkm_top_k', type=int, default=8, help='FwPKM top-k retrieval (ctm_fwpkm).')
+    parser.add_argument('--fwpkm_lr', type=float, default=0.1, help='FwPKM fast-weight learning rate (ctm_fwpkm).')
+    parser.add_argument('--fwpkm_chunk_size', type=int, default=16, help='FwPKM write chunk size (ctm_fwpkm).')
 
     # Model Architecture - Common
     parser.add_argument('--d_model', type=int, default=512, help='Dimension of the model.')
@@ -476,6 +484,9 @@ if __name__=='__main__':
             elif args.model == 'clip_ctm':
                 predictions, certainties, synchronisation = model(inputs)
                 loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
+            elif args.model == 'ctm_fwpkm':
+                predictions, certainties, synchronisation = model(inputs)
+                loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
             elif args.model == 'ff':
                 predictions = model(inputs)
                 loss = nn.CrossEntropyLoss()(predictions, targets)
@@ -498,7 +509,7 @@ if __name__=='__main__':
 
         if is_main_process(rank):
             accuracy_local = 0.0
-            if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'lstm']:
+            if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'ctm_fwpkm', 'lstm']:
                 accuracy_local = (predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain] == targets).float().mean().item()
                 pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f}'
             elif args.model == 'ff':
@@ -539,6 +550,10 @@ if __name__=='__main__':
                             loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
                             preds_eval = predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain]
                         elif args.model == 'clip_ctm':
+                            predictions, certainties, _ = model(inputs)
+                            loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
+                            preds_eval = predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain]
+                        elif args.model == 'ctm_fwpkm':
                             predictions, certainties, _ = model(inputs)
                             loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
                             preds_eval = predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain]
