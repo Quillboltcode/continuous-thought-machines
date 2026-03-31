@@ -66,7 +66,7 @@ class CLIPCTM(ContinuousThoughtMachine):
             clip_dtype = _dtype_map.get(clip_dtype, torch.float32)
 
         # ---- Load frozen CLIP (ViT vision + optional text) ----
-        self.clip_model = CLIPModel.from_pretrained(clip_model_name, dtype=clip_dtype)
+        self.clip_model = CLIPModel.from_pretrained(clip_model_name, torch_dtype=clip_dtype)
         self.clip_model.eval()
         for param in self.clip_model.parameters():
             param.requires_grad = False
