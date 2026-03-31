@@ -97,16 +97,12 @@ class CLIPCTM(ContinuousThoughtMachine):
         if use_intermediate_layer:
             self.patch_pe = nn.Embedding(self.n_patches, d_input)
 
-        # ---- Initialize lazy modules (kv_proj, q_proj, attention) ----
+        # ---- Materialise kv_proj LazyLinear for DDP compatibility ----
         with torch.no_grad():
-            vc = self.clip_model.config.vision_config
-            n_tok = (vc.image_size // vc.patch_size) ** 2
+            n_tok = self.n_patches
             if use_text_features and hasattr(self, 'text_tokens'):
                 n_tok += self.text_tokens.shape[0]
-            dummy = torch.zeros(1, n_tok, self.clip_dim)
-            self.kv_proj(dummy)
-            dummy_q = torch.zeros(1, self.d_model)
-            self.q_proj(dummy_q)
+            self.kv_proj(torch.zeros(1, n_tok, self.clip_dim))
 
     # ------------------------------------------------------------------
     # compute_features — the single override that wires CLIP → CTM
