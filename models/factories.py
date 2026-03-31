@@ -137,6 +137,8 @@ def create_model(args, prediction_reshaper=None):
             dropout_nlm=args.dropout_nlm,
             neuron_select_type=args.neuron_select_type,
             n_random_pairing_self=args.n_random_pairing_self,
+            pretrained_backbone=args.pretrained_backbone,
+            grayscale=args.grayscale,
         )
     elif args.model == "lstm":
         model = LSTMBaseline(
