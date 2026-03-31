@@ -44,9 +44,20 @@ def parse_args():
     parser = argparse.ArgumentParser()
 
     # Model Selection
-    parser.add_argument('--model', type=str, required=True, 
-                        choices=['ctm', 'ctm_gated', 'ctm_with_innovations', 'lstm', 'ff'], 
+    parser.add_argument('--model', type=str, required=True,
+                        choices=['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'lstm', 'ff'],
                         help='Model type to train.')
+
+    # CLIP-CTM specific
+    parser.add_argument('--clip_model_name', type=str, default='openai/clip-vit-base-patch32',
+                        help='HuggingFace CLIP model identifier for clip_ctm.')
+    parser.add_argument('--use_text_features', action=argparse.BooleanOptionalAction, default=False,
+                        help='Concatenate frozen text-token embeddings (clip_ctm).')
+    parser.add_argument('--use_intermediate_layer', action=argparse.BooleanOptionalAction, default=False,
+                        help='Add learnable per-patch PE after kv_proj (clip_ctm).')
+    parser.add_argument('--clip_dtype', type=str, default='float16',
+                        choices=['float16', 'float32', 'fp16', 'fp32'],
+                        help='Precision for frozen CLIP parameters (clip_ctm).')
 
     # Model Architecture - Common
     parser.add_argument('--d_model', type=int, default=512, help='Dimension of the model.')
@@ -462,6 +473,9 @@ if __name__=='__main__':
             elif args.model == 'lstm':
                 predictions, certainties, synchronisation = model(inputs)
                 loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
+            elif args.model == 'clip_ctm':
+                predictions, certainties, synchronisation = model(inputs)
+                loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
             elif args.model == 'ff':
                 predictions = model(inputs)
                 loss = nn.CrossEntropyLoss()(predictions, targets)
@@ -521,6 +535,10 @@ if __name__=='__main__':
                             loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
                             preds_eval = predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain]
                         elif args.model == 'lstm':
+                            predictions, certainties, _ = model(inputs)
+                            loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
+                            preds_eval = predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain]
+                        elif args.model == 'clip_ctm':
                             predictions, certainties, _ = model(inputs)
                             loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
                             preds_eval = predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain]

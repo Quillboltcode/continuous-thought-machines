@@ -2,6 +2,7 @@ import torch
 from models.ctm import ContinuousThoughtMachine
 from models.ctm_gated import CTMGated, CTMGatedLoss
 from models.ctm_with_innovations import CTMWithInnovations
+from models.clip_ctm import CLIPCTM
 from models.lstm import LSTMBaseline
 from models.ff import FFBaseline
 
@@ -112,6 +113,30 @@ def create_model(args, prediction_reshaper=None):
             use_sanp=args.use_sanp,
             hne_group_configs=args.hne_group_configs,
             sanp_init_top_k=args.sanp_init_top_k,
+        )
+    elif args.model == "clip_ctm":
+        model = CLIPCTM(
+            clip_model_name=args.clip_model_name,
+            use_text_features=args.use_text_features,
+            use_intermediate_layer=args.use_intermediate_layer,
+            clip_dtype=args.clip_dtype,
+            iterations=args.iterations,
+            d_model=args.d_model,
+            d_input=args.d_input,
+            heads=args.heads,
+            n_synch_out=args.n_synch_out,
+            n_synch_action=args.n_synch_action,
+            synapse_depth=args.synapse_depth,
+            memory_length=args.memory_length,
+            deep_nlms=args.deep_memory,
+            memory_hidden_dims=args.memory_hidden_dims,
+            do_layernorm_nlm=args.do_normalisation,
+            out_dims=args.out_dims,
+            prediction_reshaper=prediction_reshaper,
+            dropout=args.dropout,
+            dropout_nlm=args.dropout_nlm,
+            neuron_select_type=args.neuron_select_type,
+            n_random_pairing_self=args.n_random_pairing_self,
         )
     elif args.model == "lstm":
         model = LSTMBaseline(
