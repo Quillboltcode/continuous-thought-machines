@@ -498,7 +498,7 @@ if __name__=='__main__':
 
         if is_main_process(rank):
             accuracy_local = 0.0
-            if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'lstm']:
+            if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'lstm']:
                 accuracy_local = (predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain] == targets).float().mean().item()
                 pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f}'
             elif args.model == 'ff':
