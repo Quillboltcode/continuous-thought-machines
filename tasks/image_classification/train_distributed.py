@@ -312,10 +312,11 @@ if __name__=='__main__':
         print(f"Warning: Pseudo forward pass failed: {e}")
 
     # Wrap model with DDP
+    find_unused = args.model in ('ctm_fwpkm',)  # FwPKM fast-weight path has local loss params
     if device.type == 'cuda' and world_size > 1:
-        model = DDP(model_base, device_ids=[local_rank], output_device=local_rank)
+        model = DDP(model_base, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused)
     elif device.type == 'cpu' and world_size > 1:
-        model = DDP(model_base)
+        model = DDP(model_base, find_unused_parameters=find_unused)
     else:
         model = model_base
 
