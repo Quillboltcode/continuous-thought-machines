@@ -4,14 +4,32 @@ import torch.nn as nn
 from models.ctm import ContinuousThoughtMachine
 
 
+class AdapterMLP(nn.Module):
+    """
+    Learnable MLP adapter for transferring CLIP features to CTM latent space.
+    This adapter is trained while CLIP remains completely frozen.
+    """
+    def __init__(self, c_in, reduction=4):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(c_in, c_in // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(c_in // reduction, c_in, bias=False),
+            nn.ReLU(inplace=True)
+        )
+        self.proj = nn.Linear(c_in, c_in, bias=False)
+    
+    def forward(self, x):
+        return self.proj(self.fc(x))
+
+
 class CLIPCTM(ContinuousThoughtMachine):
     """
-    CLIP-CTM: CTM reasoning loop as a trainable adapter over frozen CLIP.
+    CLIP-CTM: CTM reasoning loop with a learnable MLP adapter over frozen CLIP.
 
-    Overrides ``compute_features`` to extract spatial patch tokens from a frozen
-    HuggingFace CLIP vision encoder (ViT-based), then projects them through the
-    CTM's ``kv_proj`` into its latent reasoning space.  All CTM internals
-    (synapses, NLMs, synchronisation, attention) remain fully trainable.
+    Uses a trainable MLP adapter that maps frozen CLIP vision features to CTM's
+    latent reasoning space. The CLIP model remains completely frozen during training,
+    while only the adapter MLP and CTM internals are trained.
 
     Requires: ``pip install transformers`` (already in requirements.txt).
 
@@ -25,7 +43,7 @@ class CLIPCTM(ContinuousThoughtMachine):
         text_prompts: List of class-descriptor strings used when
             *use_text_features* is ``True``.
         use_intermediate_layer: Add a learnable per-patch positional embedding
-            *after* ``kv_proj`` (in CTM's ``d_input`` space).
+            *after* the adapter (in CTM's ``d_input`` space).
         clip_dtype: Precision for CLIP parameters (``"float32"`` or ``"float16"``).
         **ctm_kwargs: Forwarded to
             :class:`~models.ctm.ContinuousThoughtMachine`.  The constructor
@@ -97,6 +115,9 @@ class CLIPCTM(ContinuousThoughtMachine):
         if use_intermediate_layer:
             self.patch_pe = nn.Embedding(self.n_patches, d_input)
 
+        # ---- Learnable MLP adapter (trained while CLIP is frozen) ----
+        self.adapter = AdapterMLP(c_in=self.clip_dim, reduction=4)
+
         # ---- Materialise kv_proj LazyLinear for DDP compatibility ----
         with torch.no_grad():
             n_tok = self.n_patches
@@ -109,7 +130,7 @@ class CLIPCTM(ContinuousThoughtMachine):
     # ------------------------------------------------------------------
 
     def compute_features(self, x):
-        """Extract frozen CLIP tokens, project into CTM's ``d_input`` space."""
+        """Extract frozen CLIP tokens, project into CTM's ``d_input`` space via learnable adapter."""
         B = x.size(0)
         mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=x.device).view(1, 3, 1, 1)
         std  = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=x.device).view(1, 3, 1, 1)
@@ -124,7 +145,7 @@ class CLIPCTM(ContinuousThoughtMachine):
                     text = self.text_proj(text)
                 tokens = torch.cat([tokens, text], dim=1)  # image first, text second
 
-        kv = self.kv_proj(tokens)  # LazyLinear handles CLIP dim → d_input
+        kv = self.adapter(tokens)  # Use learnable MLP adapter instead of kv_proj
 
         if self.patch_pe is not None:
             positions = torch.arange(kv.size(1), device=kv.device)

@@ -45,8 +45,11 @@ def parse_args():
 
     # Model Selection
     parser.add_argument('--model', type=str, required=True,
-                        choices=['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'ctm_fwpkm', 'lstm', 'ff'],
+                        choices=['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f', 'ctm_fwpkm', 'lstm', 'ff'],
                         help='Model type to train.')
+
+    parser.add_argument('--adapter_reduction', type=int, default=4,
+                        help='Bottleneck reduction ratio for adapters.')
 
     # CLIP-CTM specific
     parser.add_argument('--clip_model_name', type=str, default='openai/clip-vit-base-patch32',
@@ -485,6 +488,9 @@ if __name__=='__main__':
             elif args.model == 'clip_ctm':
                 predictions, certainties, synchronisation = model(inputs)
                 loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
+            elif args.model in ['clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f']:
+                predictions, certainties, synchronisation = model(inputs)
+                loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
             elif args.model == 'ctm_fwpkm':
                 predictions, certainties, synchronisation = model(inputs)
                 loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
@@ -510,7 +516,7 @@ if __name__=='__main__':
 
         if is_main_process(rank):
             accuracy_local = 0.0
-            if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'ctm_fwpkm', 'lstm']:
+            if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f', 'ctm_fwpkm', 'lstm']:
                 accuracy_local = (predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain] == targets).float().mean().item()
                 pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f}'
             elif args.model == 'ff':
