@@ -560,6 +560,10 @@ if __name__=='__main__':
                             predictions, certainties, _ = model(inputs)
                             loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
                             preds_eval = predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain]
+                        elif args.model in ['clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f']:
+                            predictions, certainties, _ = model(inputs)
+                            loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
+                            preds_eval = predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain]
                         elif args.model == 'ctm_fwpkm':
                             predictions, certainties, _ = model(inputs)
                             loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
