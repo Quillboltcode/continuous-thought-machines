@@ -33,3 +33,4 @@ add_fer_plus_support.py
 fix_indentation.py
 docs/
 analysis_checkpoints/
+tasks/image_classification/analysis/outputs/classification_results.tsv

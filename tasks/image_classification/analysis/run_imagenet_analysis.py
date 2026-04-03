@@ -80,7 +80,9 @@ def parse_args():
     parser.add_argument('--N_to_viz', type=int, default=5, help="When not supplying data_indices.")
     parser.add_argument('--synch_matrix_ticks', type=int, nargs='+', default=[1, 5, 10, 20, 49], help="Ticks to show in synchronization matrix plot.")
     parser.add_argument('--save_synch_gif', action=argparse.BooleanOptionalAction, default=True, help="Save GIF of synchronization matrix evolution.")
-    
+    parser.add_argument('--split', type=str, default='test', choices=['train', 'test', 'validation'], help="Dataset split to use for evaluation (appended to data_root for rafdb/ferplusplus).")
+    parser.add_argument('--batch_size', type=int, default=1, help="Batch size for inference (classification_report). Keep low (1-4) on small GPUs.")
+
     return parser.parse_args()
 
 
@@ -205,7 +207,7 @@ if __name__=='__main__':
             if is_grayscale:
                 dataset_mean = [0.5]
                 dataset_std = [0.5]
-                img_size = 224
+                img_size = args.img_size
                 transform = transforms.Compose([
                     transforms.Resize((img_size, img_size)),
                     transforms.Grayscale(num_output_channels=1),
@@ -229,7 +231,7 @@ if __name__=='__main__':
             else:
                 dataset_mean = [0.485, 0.456, 0.406]
                 dataset_std = [0.229, 0.224, 0.225]
-                img_size = 224
+                img_size = args.img_size
                 transform = transforms.Compose([
                     transforms.Resize((img_size, img_size)),
                     transforms.ToTensor(),
@@ -247,8 +249,9 @@ if __name__=='__main__':
                     transforms.ToTensor(),
                     transforms.Normalize(mean=dataset_mean, std=dataset_std)
                 ])
-            # For ferplusplus/rafdb, data_root already points to the folder with class subdirectories
-            data_path = args.data_root
+            # For ferplusplus/rafdb, append split to data_root
+            data_path = os.path.join(args.data_root, args.split)
+            print(f"Using split '{args.split}' -> {data_path}")
             validation_dataset = datasets.ImageFolder(root=data_path, transform=transform)
             validation_dataset_centercrop = datasets.ImageFolder(root=data_path, transform=transform_crop)
         else:
@@ -266,7 +269,7 @@ if __name__=='__main__':
 
     interp_mode = 'nearest'
     cmap_calib = sns.color_palette('viridis', as_cmap=True)
-    loader = torch.utils.data.DataLoader(validation_dataset, batch_size=1, shuffle=False, num_workers=0, drop_last=False)
+    loader = torch.utils.data.DataLoader(validation_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=False)
     loader_crop = torch.utils.data.DataLoader(validation_dataset_centercrop, batch_size=64, shuffle=True, num_workers=0, drop_last=True)
 
     model.eval()

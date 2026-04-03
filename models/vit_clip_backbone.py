@@ -4,13 +4,10 @@ import timm
 from transformers import CLIPVisionModel, CLIPVisionConfig
 
 
-class ViTTinyBackbone(nn.Module):
-    def __init__(self, pretrained=True, grayscale=False):
+class ViTBackbone(nn.Module):
+    def __init__(self, model_name='vit_tiny_patch16_224', pretrained=True, grayscale=False):
         super().__init__()
-        if pretrained:
-            self.model = timm.create_model('vit_tiny_patch16_224', pretrained=True, num_classes=0)
-        else:
-            self.model = timm.create_model('vit_tiny_patch16_224', pretrained=False, num_classes=0)
+        self.model = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
         
         self.grayscale = grayscale
         self.out_dim = self.model.embed_dim
@@ -45,10 +42,15 @@ class CLIPBackbone(nn.Module):
 
 
 def prepare_vit_backbone(backbone_type, pretrained="imagenet", grayscale=False):
-    if backbone_type == "vit-tiny":
-        return ViTTinyBackbone(pretrained=(pretrained == "imagenet"), grayscale=grayscale)
-    else:
-        raise ValueError(f"Unsupported ViT backbone: {backbone_type}")
+    model_map = {
+        "vit-tiny": "vit_tiny_patch16_224",
+        "vit-small": "vit_small_patch16_224",
+        "vit-base": "vit_base_patch16_224",
+        "vit-large": "vit_large_patch16_224",
+    }
+    if backbone_type not in model_map:
+        raise ValueError(f"Unsupported ViT backbone: {backbone_type}. Choose from: {list(model_map.keys())}")
+    return ViTBackbone(model_name=model_map[backbone_type], pretrained=(pretrained == "imagenet"), grayscale=grayscale)
 
 
 def prepare_clip_backbone(backbone_type, pretrained="imagenet", grayscale=False):

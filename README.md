@@ -1,5 +1,7 @@
 # 🕰️ The Continuous Thought Machine
-
+- thử ViT
+- dùng clip extractor cho embedding vector.Rồi loop suy nghĩ looppedLM
+- Chỉ ra distribution của logit khác biệt giữa các tick.
 > **Note from Fork**: This is a fork of [sakana-ai/continuous-thought-machines](https://github.com/sakana-ai/continuous-thought-machines). 
 > 
 > - I've added a new dataset in FER domain.
