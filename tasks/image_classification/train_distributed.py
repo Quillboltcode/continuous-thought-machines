@@ -548,9 +548,11 @@ if __name__=='__main__':
 
         if is_main_process(rank):
             accuracy_local = 0.0
+            selected_tick = -1
             if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f', 'ctm_fwpkm', 'lstm']:
                 accuracy_local = (predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain] == targets).float().mean().item()
-                pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f}'
+                selected_tick = where_most_certain.float().mean().item() if where_most_certain is not None else -1
+                pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f} Tick={selected_tick:.1f}'
                 
                 # Log metrics for clip_ctm
                 if args.model == 'clip_ctm':
@@ -558,7 +560,7 @@ if __name__=='__main__':
                         model_for_log = model.module if world_size > 1 else model
                         if hasattr(model_for_log, 'backbone_adapter') and hasattr(model_for_log.backbone_adapter, 'alpha'):
                             alpha_val = model_for_log.backbone_adapter.alpha.data.item()
-                            print(f"  [iter {bi}] alpha = {alpha_val:.4f}, loss = {loss_log.item():.4f}")
+                            print(f"  [iter {bi}] alpha = {alpha_val:.4f}, loss = {loss_log.item():.4f}, tick = {selected_tick:.1f}")
                             if args.use_wandb:
                                 wandb.log({"alpha": alpha_val, "iteration": bi})
                     if args.use_wandb and bi % 100 == 0:
@@ -566,6 +568,7 @@ if __name__=='__main__':
                             "Train Loss": loss_log.item(),
                             "Train Accuracy": accuracy_local,
                             "Learning Rate": current_lr,
+                            "Selected Tick": selected_tick,
                             "Iteration": bi,
                         })
             elif args.model == 'ff':
@@ -582,6 +585,7 @@ if __name__=='__main__':
                 total_eval_loss = torch.tensor(0.0, device=device)
                 total_eval_correct = torch.tensor(0.0, device=device)
                 total_eval_samples = torch.tensor(0.0, device=device)
+                total_eval_tick = torch.tensor(0.0, device=device)
 
                 pbar_inner_desc = 'Eval (Rank 0)' if is_main_process(rank) else None
                 with tqdm(total=len(evalloader), desc=pbar_inner_desc, leave=False, position=1, dynamic_ncols=True, disable=not is_main_process(rank)) as pbar_inner:
@@ -609,6 +613,8 @@ if __name__=='__main__':
                             predictions, certainties, _ = model(inputs)
                             loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
                             preds_eval = predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain]
+                            if where_most_certain is not None:
+                                total_eval_tick += where_most_certain.float().sum()
                         elif args.model in ['clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f']:
                             predictions, certainties, _ = model(inputs)
                             loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
@@ -633,20 +639,23 @@ if __name__=='__main__':
                     dist.all_reduce(total_eval_loss, op=dist.ReduceOp.SUM)
                     dist.all_reduce(total_eval_correct, op=dist.ReduceOp.SUM)
                     dist.all_reduce(total_eval_samples, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(total_eval_tick, op=dist.ReduceOp.SUM)
 
                 if is_main_process(rank) and total_eval_samples > 0:
                     avg_eval_loss = total_eval_loss.item() / total_eval_samples.item()
                     eval_acc = total_eval_correct.item() / total_eval_samples.item()
+                    eval_avg_tick = total_eval_tick.item() / total_eval_samples.item() if total_eval_samples.item() > 0 else -1
                     test_losses.append(avg_eval_loss)
                     test_accuracies_most_certain.append(eval_acc)
                     
-                    print(f"Iter {bi} Eval: Loss={avg_eval_loss:.4f}, Acc={eval_acc:.4f}")
+                    print(f"Iter {bi} Eval: Loss={avg_eval_loss:.4f}, Acc={eval_acc:.4f}, Tick={eval_avg_tick:.1f}")
                     
                     # Log to W&B
                     if args.use_wandb:
                         wandb.log({
                             "Eval Loss": avg_eval_loss,
                             "Eval Accuracy": eval_acc,
+                            "Eval Selected Tick": eval_avg_tick,
                             "Iteration": bi,
                         })
 
