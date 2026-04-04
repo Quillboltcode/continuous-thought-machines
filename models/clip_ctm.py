@@ -204,9 +204,6 @@ class CLIPCTM(ContinuousThoughtMachine):
         with torch.no_grad():
             self.text_tokens = self.clip_model.encode_text(tokens)
         
-        # Move text tokens to same device as model
-        self.text_tokens = self.text_tokens.to(next(self.parameters()).device)
-        
         if self.text_tokens.shape[-1] != self.clip_dim:
             self.text_proj = nn.Linear(self.text_tokens.shape[-1], self.clip_dim, bias=False)
     
@@ -221,7 +218,7 @@ class CLIPCTM(ContinuousThoughtMachine):
         tokens = self.backbone_adapter(x)
         
         if self.text_tokens is not None:
-            text = self.text_tokens.unsqueeze(0).expand(B, -1, -1).float()
+            text = self.text_tokens.to(x.device).unsqueeze(0).expand(B, -1, -1).float()
             if self.text_proj is not None:
                 text = self.text_proj(text)
             tokens = torch.cat([tokens, text], dim=1)
