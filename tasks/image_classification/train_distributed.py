@@ -310,23 +310,22 @@ if __name__=='__main__':
     model_base = model_base.to(device)
 
     # Initialize lazy modules with proper input size
-    try:
-        if args.model == 'clip_ctm':
-            pseudo_inputs = torch.randn(1, 3, args.img_size, args.img_size).to(device)
-        else:
-            pseudo_inputs = train_data.__getitem__(0)[0].unsqueeze(0).to(device)
-        model_base(pseudo_inputs)
-    except Exception as e:
-        print(f"Warning: Pseudo forward pass failed: {e}")
-        # Fallback: try with different size
+    # Must run multiple times to ensure all lazy modules are initialized
+    if args.model == 'clip_ctm':
         try:
-            pseudo_inputs = torch.randn(1, 3, 224, 224).to(device)
-            model_base(pseudo_inputs)
-        except Exception as e2:
-            print(f"Warning: Second pseudo forward pass failed: {e2}")
+            print("Initializing lazy modules for clip_ctm...")
+            for _ in range(3):
+                pseudo_inputs = torch.randn(2, 3, args.img_size, args.img_size).to(device)
+                with torch.no_grad():
+                    _ = model_base(pseudo_inputs)
+            print("Lazy module initialization complete.")
+        except Exception as e:
+            print(f"Warning: Pseudo forward pass failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     # Wrap model with DDP
-    find_unused = args.model in ('ctm_fwpkm',)  # FwPKM fast-weight path has local loss params
+    find_unused = args.model in ('ctm_fwpkm', 'clip_ctm')  # These models may have unused parameters
     if device.type == 'cuda' and world_size > 1:
         model = DDP(model_base, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused)
     elif device.type == 'cpu' and world_size > 1:
