@@ -541,14 +541,22 @@ if __name__=='__main__':
                 accuracy_local = (predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain] == targets).float().mean().item()
                 pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f}'
                 
-                # Log alpha value for clip_ctm
-                if args.model == 'clip_ctm' and bi % 500 == 0:
-                    model_for_log = model.module if world_size > 1 else model
-                    if hasattr(model_for_log, 'backbone_adapter') and hasattr(model_for_log.backbone_adapter, 'alpha'):
-                        alpha_val = model_for_log.backbone_adapter.alpha.data.item()
-                        print(f"  [iter {bi}] alpha = {alpha_val:.4f}")
-                        if args.use_wandb:
-                            wandb.log({"alpha": alpha_val, "iteration": bi})
+                # Log metrics for clip_ctm
+                if args.model == 'clip_ctm':
+                    if bi % 500 == 0:
+                        model_for_log = model.module if world_size > 1 else model
+                        if hasattr(model_for_log, 'backbone_adapter') and hasattr(model_for_log.backbone_adapter, 'alpha'):
+                            alpha_val = model_for_log.backbone_adapter.alpha.data.item()
+                            print(f"  [iter {bi}] alpha = {alpha_val:.4f}, loss = {loss_log.item():.4f}")
+                            if args.use_wandb:
+                                wandb.log({"alpha": alpha_val, "iteration": bi})
+                    if args.use_wandb and bi % 100 == 0:
+                        wandb.log({
+                            "Train Loss": loss_log.item(),
+                            "Train Accuracy": accuracy_local,
+                            "Learning Rate": current_lr,
+                            "Iteration": bi,
+                        })
             elif args.model == 'ff':
                 accuracy_local = (predictions.argmax(1) == targets).float().mean().item()
                 pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f}'
