@@ -52,15 +52,14 @@ def parse_args():
                         help='Bottleneck reduction ratio for adapters.')
 
     # CLIP-CTM specific
-    parser.add_argument('--clip_model_name', type=str, default='openai/clip-vit-base-patch32',
-                        help='HuggingFace CLIP model identifier for clip_ctm.')
-    parser.add_argument('--use_text_features', action=argparse.BooleanOptionalAction, default=False,
-                        help='Concatenate frozen text-token embeddings (clip_ctm).')
-    parser.add_argument('--use_intermediate_layer', action=argparse.BooleanOptionalAction, default=False,
-                        help='Add learnable per-patch PE after kv_proj (clip_ctm).')
-    parser.add_argument('--clip_dtype', type=str, default='float16',
-                        choices=['float16', 'float32', 'fp16', 'fp32'],
-                        help='Precision for frozen CLIP parameters (clip_ctm).')
+    parser.add_argument('--clip_model_name', type=str, default='ViT-B-32',
+                        help='OpenCLIP model name for clip_ctm (e.g., ViT-B-32, ViT-L-14).')
+    parser.add_argument('--clip_pretrained', type=str, default='laion2b_s34b_b79k',
+                        help='OpenCLIP pretrained dataset for clip_ctm (e.g., laion2b_s34b_b79k, openai).')
+    parser.add_argument('--alpha_init', type=float, default=0.5,
+                        help='Initial alpha value for CLIP-Adapter blend.')
+    parser.add_argument('--text_prompts', type=str, default=None,
+                        help='JSON string for text prompts with templates and classes (clip_ctm).')
 
     # CTM-FwPKM specific
     parser.add_argument('--fwpkm_d_key', type=int, default=64, help='FwPKM key dimension (ctm_fwpkm).')
@@ -71,8 +70,8 @@ def parse_args():
     parser.add_argument('--fwpkm_chunk_size', type=int, default=16, help='FwPKM write chunk size (ctm_fwpkm).')
 
     # Model Architecture - Common
-    parser.add_argument('--d_model', type=int, default=512, help='Dimension of the model.')
-    parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate.')
+    parser.add_argument('--d_model', type=int, default=256, help='Dimension of the model.')
+    parser.add_argument('--dropout', type=float, default=0.2, help='Dropout rate.')
     parser.add_argument('--backbone_type', type=str, default='resnet18-4', help='Type of backbone featureiser.')
     parser.add_argument('--pretrained_backbone', type=str, default='none', 
                         choices=['none', 'imagenet', 'ms-celeba'], help='Use a pretrained backbone.')
@@ -81,9 +80,9 @@ def parse_args():
                         help='Convert grayscale images to 3-channel RGB.')
 
     # CTM / LSTM specific
-    parser.add_argument('--d_input', type=int, default=128, help='Dimension of the input (CTM, LSTM).')
+    parser.add_argument('--d_input', type=int, default=512, help='Dimension of the input (CTM, LSTM). Must match CLIP output dim.')
     parser.add_argument('--heads', type=int, default=4, help='Number of attention heads (CTM, LSTM).') 
-    parser.add_argument('--iterations', type=int, default=50, help='Number of internal ticks (CTM, LSTM).') 
+    parser.add_argument('--iterations', type=int, default=30, help='Number of internal ticks (CTM, LSTM).') 
     parser.add_argument('--positional_embedding_type', type=str, default='none', 
                         choices=['none', 'learnable-fourier', 'multi-learnable-fourier', 'custom-rotational', 'custom-rotational-1d'],
                         help='Type of positional embedding.')
@@ -93,15 +92,15 @@ def parse_args():
     parser.add_argument('--lambda_p', type=float, default=0.2, help='Lambda for PonderLoss.')
     parser.add_argument('--beta', type=float, default=0.01, help='Beta for ponder/loop loss.')
     parser.add_argument('--synapse_depth', type=int, default=4, help='Depth of U-NET for synapse.')
-    parser.add_argument('--n_synch_out', type=int, default=32, help='Number of neurons for output synch.')
-    parser.add_argument('--n_synch_action', type=int, default=32, help='Number of neurons for action synch.')
-    parser.add_argument('--neuron_select_type', type=str, default='first-last', 
+    parser.add_argument('--n_synch_out', type=int, default=128, help='Number of neurons for output synch.')
+    parser.add_argument('--n_synch_action', type=int, default=128, help='Number of neurons for action synch.')
+    parser.add_argument('--neuron_select_type', type=str, default='random-pairing', 
                         choices=['first-last', 'random', 'random-pairing'],
                         help='Protocol for selecting neuron subset.')
     parser.add_argument('--n_random_pairing_self', type=int, default=0, help='Self-to-self synch pairs.')
-    parser.add_argument('--memory_length', type=int, default=25, help='Pre-activation history length.')
+    parser.add_argument('--memory_length', type=int, default=20, help='Pre-activation history length.')
     parser.add_argument('--deep_memory', action=argparse.BooleanOptionalAction, default=True, help='Use deep memory.')
-    parser.add_argument('--memory_hidden_dims', type=int, default=4, help='Hidden dims for deep memory.')
+    parser.add_argument('--memory_hidden_dims', type=int, default=16, help='Hidden dims for deep memory.')
     parser.add_argument('--dropout_nlm', type=float, default=None, help='Dropout for NLMs.')
     parser.add_argument('--do_normalisation', action=argparse.BooleanOptionalAction, default=False, 
                         help='Apply normalization in NLMs.')
@@ -140,9 +139,9 @@ def parse_args():
     # Training 
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training (per GPU).')
     parser.add_argument('--batch_size_test', type=int, default=32, help='Batch size for testing.')
-    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate.')
-    parser.add_argument('--training_iterations', type=int, default=100001, help='Number of training iterations.')
-    parser.add_argument('--warmup_steps', type=int, default=5000, help='Warmup steps.')
+    parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate.')
+    parser.add_argument('--training_iterations', type=int, default=20001, help='Number of training iterations.')
+    parser.add_argument('--warmup_steps', type=int, default=1000, help='Warmup steps.')
     parser.add_argument('--use_scheduler', action=argparse.BooleanOptionalAction, default=True, help='Use LR scheduler.')
     parser.add_argument('--scheduler_type', type=str, default='cosine', choices=['multistep', 'cosine'])
     parser.add_argument('--milestones', type=int, default=[8000, 15000, 20000], nargs='+')
@@ -159,7 +158,7 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default='cifar10',
                         choices=['cifar10', 'cifar100', 'imagenet', 'RAFDB', 'FerPlusPlus', 'affectnet'])
     parser.add_argument('--data_root', type=str, default='data/')
-    parser.add_argument('--img_size', type=int, default=100)
+    parser.add_argument('--img_size', type=int, default=224)
     parser.add_argument('--save_every', type=int, default=1000)
     parser.add_argument('--seed', type=int, default=412)
     parser.add_argument('--reload', action=argparse.BooleanOptionalAction, default=False)
@@ -230,12 +229,15 @@ def is_main_process(rank):
 if __name__=='__main__':
     args = parse_args()
 
-    # Parse hne_group_configs
+    # Parse hne_group_configs and text_prompts
     if args.hne_group_configs is not None:
         args.hne_group_configs = json.loads(args.hne_group_configs)
     elif args.hne_group_configs_file is not None:
         with open(args.hne_group_configs_file, 'r') as f:
             args.hne_group_configs = json.load(f)
+    
+    if args.text_prompts is not None:
+        args.text_prompts = json.loads(args.text_prompts)
 
     rank, world_size, local_rank = setup_ddp()
 
