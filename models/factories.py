@@ -2,18 +2,11 @@ import torch
 from models.ctm import ContinuousThoughtMachine
 from models.ctm_gated import CTMGated, CTMGatedLoss
 from models.ctm_with_innovations import CTMWithInnovations
-from models.clip_ctm import CLIPCTM
-from models.clip_ctm_adapters import (
-    CLIPCTMAdapterHookA,
-    CLIPCTMAdapterHookB,
-    CLIPCTMAdapterHookC,
-    CLIPCTMAdapterHookD,
-    CLIPCTMAdapterHookE,
-    CLIPCTMAdapterHookF,
-)
+
 from models.ctm_FwPKM import CTMFwPKMNeuralComputer
 from models.lstm import LSTMBaseline
 from models.ff import FFBaseline
+from models.clip_ctm import CLIPCTM
 
 
 def create_model(args, prediction_reshaper=None):
@@ -123,32 +116,6 @@ def create_model(args, prediction_reshaper=None):
             hne_group_configs=args.hne_group_configs,
             sanp_init_top_k=args.sanp_init_top_k,
         )
-    elif args.model == "clip_ctm":
-        model = CLIPCTM(
-            clip_model_name=args.clip_model_name,
-            use_text_features=args.use_text_features,
-            use_intermediate_layer=args.use_intermediate_layer,
-            clip_dtype=args.clip_dtype,
-            iterations=args.iterations,
-            d_model=args.d_model,
-            d_input=args.d_input,
-            heads=args.heads,
-            n_synch_out=args.n_synch_out,
-            n_synch_action=args.n_synch_action,
-            synapse_depth=args.synapse_depth,
-            memory_length=args.memory_length,
-            deep_nlms=args.deep_memory,
-            memory_hidden_dims=args.memory_hidden_dims,
-            do_layernorm_nlm=args.do_normalisation,
-            out_dims=args.out_dims,
-            prediction_reshaper=prediction_reshaper,
-            dropout=args.dropout,
-            dropout_nlm=args.dropout_nlm,
-            neuron_select_type=args.neuron_select_type,
-            n_random_pairing_self=args.n_random_pairing_self,
-            pretrained_backbone=args.pretrained_backbone,
-            grayscale=args.grayscale,
-        )
     elif args.model == "ctm_fwpkm":
         model = CTMFwPKMNeuralComputer(
             iterations=args.iterations,
@@ -179,13 +146,19 @@ def create_model(args, prediction_reshaper=None):
             fwpkm_lr=args.fwpkm_lr,
             fwpkm_chunk_size=args.fwpkm_chunk_size,
         )
-    elif args.model == "clip_ctm_adapter_a":
-        model = CLIPCTMAdapterHookA(
-            clip_model_name=args.clip_model_name,
-            use_text_features=args.use_text_features,
-            use_intermediate_layer=args.use_intermediate_layer,
-            clip_dtype=args.clip_dtype,
+    # clip_ctm using open_clip
+    elif args.model == "clip_ctm":
+        text_prompts = None
+        if hasattr(args, 'text_prompts') and args.text_prompts is not None:
+            text_prompts = args.text_prompts
+        
+        model = CLIPCTM(
+            clip_model_name=getattr(args, 'clip_model_name', 'ViT-B-32'),
+            pretrained=getattr(args, 'clip_pretrained', 'laion2b_s34b_b79k'),
             adapter_reduction=getattr(args, 'adapter_reduction', 4),
+            alpha_init=getattr(args, 'alpha_init', 0.5),
+            use_intermediate_layer=getattr(args, 'use_intermediate_layer', False),
+            text_prompts=text_prompts,
             iterations=args.iterations,
             d_model=args.d_model,
             d_input=args.d_input,
@@ -203,144 +176,8 @@ def create_model(args, prediction_reshaper=None):
             dropout_nlm=args.dropout_nlm,
             neuron_select_type=args.neuron_select_type,
             n_random_pairing_self=args.n_random_pairing_self,
-            pretrained_backbone=args.pretrained_backbone,
-            grayscale=args.grayscale,
         )
-    elif args.model == "clip_ctm_adapter_b":
-        model = CLIPCTMAdapterHookB(
-            clip_model_name=args.clip_model_name,
-            use_text_features=args.use_text_features,
-            use_intermediate_layer=args.use_intermediate_layer,
-            clip_dtype=args.clip_dtype,
-            adapter_reduction=getattr(args, 'adapter_reduction', 4),
-            iterations=args.iterations,
-            d_model=args.d_model,
-            d_input=args.d_input,
-            heads=args.heads,
-            n_synch_out=args.n_synch_out,
-            n_synch_action=args.n_synch_action,
-            synapse_depth=args.synapse_depth,
-            memory_length=args.memory_length,
-            deep_nlms=args.deep_memory,
-            memory_hidden_dims=args.memory_hidden_dims,
-            do_layernorm_nlm=args.do_normalisation,
-            out_dims=args.out_dims,
-            prediction_reshaper=prediction_reshaper,
-            dropout=args.dropout,
-            dropout_nlm=args.dropout_nlm,
-            neuron_select_type=args.neuron_select_type,
-            n_random_pairing_self=args.n_random_pairing_self,
-            pretrained_backbone=args.pretrained_backbone,
-            grayscale=args.grayscale,
-        )
-    elif args.model == "clip_ctm_adapter_c":
-        model = CLIPCTMAdapterHookC(
-            clip_model_name=args.clip_model_name,
-            use_text_features=args.use_text_features,
-            use_intermediate_layer=args.use_intermediate_layer,
-            clip_dtype=args.clip_dtype,
-            adapter_reduction=getattr(args, 'adapter_reduction', 4),
-            iterations=args.iterations,
-            d_model=args.d_model,
-            d_input=args.d_input,
-            heads=args.heads,
-            n_synch_out=args.n_synch_out,
-            n_synch_action=args.n_synch_action,
-            synapse_depth=args.synapse_depth,
-            memory_length=args.memory_length,
-            deep_nlms=args.deep_memory,
-            memory_hidden_dims=args.memory_hidden_dims,
-            do_layernorm_nlm=args.do_normalisation,
-            out_dims=args.out_dims,
-            prediction_reshaper=prediction_reshaper,
-            dropout=args.dropout,
-            dropout_nlm=args.dropout_nlm,
-            neuron_select_type=args.neuron_select_type,
-            n_random_pairing_self=args.n_random_pairing_self,
-            pretrained_backbone=args.pretrained_backbone,
-            grayscale=args.grayscale,
-        )
-    elif args.model == "clip_ctm_adapter_d":
-        model = CLIPCTMAdapterHookD(
-            clip_model_name=args.clip_model_name,
-            use_text_features=args.use_text_features,
-            use_intermediate_layer=args.use_intermediate_layer,
-            clip_dtype=args.clip_dtype,
-            adapter_reduction=getattr(args, 'adapter_reduction', 4),
-            iterations=args.iterations,
-            d_model=args.d_model,
-            d_input=args.d_input,
-            heads=args.heads,
-            n_synch_out=args.n_synch_out,
-            n_synch_action=args.n_synch_action,
-            synapse_depth=args.synapse_depth,
-            memory_length=args.memory_length,
-            deep_nlms=args.deep_memory,
-            memory_hidden_dims=args.memory_hidden_dims,
-            do_layernorm_nlm=args.do_normalisation,
-            out_dims=args.out_dims,
-            prediction_reshaper=prediction_reshaper,
-            dropout=args.dropout,
-            dropout_nlm=args.dropout_nlm,
-            neuron_select_type=args.neuron_select_type,
-            n_random_pairing_self=args.n_random_pairing_self,
-            pretrained_backbone=args.pretrained_backbone,
-            grayscale=args.grayscale,
-        )
-    elif args.model == "clip_ctm_adapter_e":
-        model = CLIPCTMAdapterHookE(
-            clip_model_name=args.clip_model_name,
-            use_text_features=args.use_text_features,
-            use_intermediate_layer=args.use_intermediate_layer,
-            clip_dtype=args.clip_dtype,
-            adapter_reduction=getattr(args, 'adapter_reduction', 4),
-            iterations=args.iterations,
-            d_model=args.d_model,
-            d_input=args.d_input,
-            heads=args.heads,
-            n_synch_out=args.n_synch_out,
-            n_synch_action=args.n_synch_action,
-            synapse_depth=args.synapse_depth,
-            memory_length=args.memory_length,
-            deep_nlms=args.deep_memory,
-            memory_hidden_dims=args.memory_hidden_dims,
-            do_layernorm_nlm=args.do_normalisation,
-            out_dims=args.out_dims,
-            prediction_reshaper=prediction_reshaper,
-            dropout=args.dropout,
-            dropout_nlm=args.dropout_nlm,
-            neuron_select_type=args.neuron_select_type,
-            n_random_pairing_self=args.n_random_pairing_self,
-            pretrained_backbone=args.pretrained_backbone,
-            grayscale=args.grayscale,
-        )
-    elif args.model == "clip_ctm_adapter_f":
-        model = CLIPCTMAdapterHookF(
-            clip_model_name=args.clip_model_name,
-            use_text_features=args.use_text_features,
-            use_intermediate_layer=args.use_intermediate_layer,
-            clip_dtype=args.clip_dtype,
-            adapter_reduction=getattr(args, 'adapter_reduction', 4),
-            iterations=args.iterations,
-            d_model=args.d_model,
-            d_input=args.d_input,
-            heads=args.heads,
-            n_synch_out=args.n_synch_out,
-            n_synch_action=args.n_synch_action,
-            synapse_depth=args.synapse_depth,
-            memory_length=args.memory_length,
-            deep_nlms=args.deep_memory,
-            memory_hidden_dims=args.memory_hidden_dims,
-            do_layernorm_nlm=args.do_normalisation,
-            out_dims=args.out_dims,
-            prediction_reshaper=prediction_reshaper,
-            dropout=args.dropout,
-            dropout_nlm=args.dropout_nlm,
-            neuron_select_type=args.neuron_select_type,
-            n_random_pairing_self=args.n_random_pairing_self,
-            pretrained_backbone=args.pretrained_backbone,
-            grayscale=args.grayscale,
-        )
+    # clip_ctm_adapter_* removed - will be reimplemented with open_clip
     elif args.model == "lstm":
         model = LSTMBaseline(
             num_layers=args.num_layers,

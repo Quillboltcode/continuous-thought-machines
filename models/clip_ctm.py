@@ -1,206 +1,256 @@
 import torch
 import torch.nn as nn
+import open_clip
+import torch.nn.functional as F
 
 from models.ctm import ContinuousThoughtMachine
 
 
-class AdapterMLP(nn.Module):
+class CLIPBackboneAdapter(nn.Module):
     """
-    Learnable MLP adapter for transferring CLIP features to CTM latent space.
-    This adapter is trained while CLIP remains completely frozen.
+    CLIP-Adapter style backbone with frozen CLIP visual encoder and trainable bottleneck adapter.
+    
+    Architecture:
+        CLIP vision encoder (frozen) → trainable bottleneck adapter → CTM
+        
+    The adapter uses a learnable alpha parameter to blend:
+        adapted = alpha * adapter(tokens) + (1 - alpha) * tokens
+    
+    Args:
+        clip_model: OpenCLIP model with .visual attribute
+        reduction: Bottleneck reduction ratio (default: 4)
+        alpha_init: Initial value for alpha blend parameter (default: 0.5)
     """
-    def __init__(self, c_in, reduction=4):
+    def __init__(self, clip_model, reduction=4, alpha_init=0.5):
         super().__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(c_in, c_in // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(c_in // reduction, c_in, bias=False),
-            nn.ReLU(inplace=True)
+        self.clip_visual = clip_model.visual
+        d = self.clip_visual.output_dim
+        
+        for param in self.clip_visual.parameters():
+            param.requires_grad = False
+        
+        self.adapter = nn.Sequential(
+            nn.Linear(d, d // reduction, bias=False),
+            nn.ReLU(),
+            nn.Linear(d // reduction, d, bias=False),
+            nn.ReLU()
         )
-        self.proj = nn.Linear(c_in, c_in, bias=False)
+        self.alpha = nn.Parameter(torch.tensor(alpha_init))
+        
+        self.output_dim = d
+        self.mean = torch.tensor([0.48145466, 0.4578275, 0.40821073])
+        self.std = torch.tensor([0.26862954, 0.26130258, 0.27577711])
+    
+    def _extract_patch_tokens(self, x):
+        """Extract patch tokens from frozen CLIP visual encoder."""
+        B = x.shape[0]
+        
+        mean = self.mean.to(x.device).view(1, 3, 1, 1)
+        std = self.std.to(x.device).view(1, 3, 1, 1)
+        x_norm = (x - mean) / std
+        
+        patch_tokens = self.clip_visual.conv1(x_norm)
+        H = W = self.clip_visual.grid_size[0]
+        patch_tokens = patch_tokens.reshape(patch_tokens.shape[0], patch_tokens.shape[1], H * W).permute(0, 2, 1)
+        
+        cls_token = self.clip_visual.class_embedding.unsqueeze(0).expand(B, -1, -1)
+        tokens = torch.cat([cls_token, patch_tokens], dim=1)
+        tokens = tokens + self.clip_visual.positional_embedding
+        
+        tokens = self.clip_visual.ln_pre(tokens)
+        tokens = self.clip_visual.transformer(tokens)
+        tokens = self.clip_visual.ln_post(tokens)
+        
+        tokens = tokens @ self.clip_visual.proj
+        
+        patch_tokens = tokens[:, 1:, :]
+        return patch_tokens
     
     def forward(self, x):
-        return self.proj(self.fc(x))
+        with torch.no_grad():
+            tokens = self._extract_patch_tokens(x)
+        
+        adapted = self.alpha * self.adapter(tokens) + (1 - self.alpha) * tokens
+        return adapted
 
 
 class CLIPCTM(ContinuousThoughtMachine):
     """
-    CLIP-CTM: CTM reasoning loop with a learnable MLP adapter over frozen CLIP.
-
-    Uses a trainable MLP adapter that maps frozen CLIP vision features to CTM's
-    latent reasoning space. The CLIP model remains completely frozen during training,
-    while only the adapter MLP and CTM internals are trained.
-
-    Requires: ``pip install transformers`` (already in requirements.txt).
-
+    CLIP-CTM using OpenCLIP vision encoder with adapter.
+    
+    Uses a trainable bottleneck adapter that maps frozen CLIP vision features 
+    to CTM's latent reasoning space. The CLIP model remains completely frozen 
+    during training, while only the adapter and CTM internals are trained.
+    
+    Architecture:
+        CLIP vision encoder (frozen) 
+            → CLIPBackboneAdapter (trainable adapter + alpha)
+                → CTM kv_proj (trainable)
+                    → CTM reasoning loop (trainable)
+    
+    Supports optional text prototypes for zero-shot classification:
+        templates: List of prompt templates (e.g., "a photo of a {} expression")
+        classes: List of class names (e.g., ["happy", "sad", "angry"])
+        Text features are precomputed once and concatenated to visual features.
+    
     Args:
-        clip_model_name: HuggingFace CLIP model identifier
-            (``"openai/clip-vit-base-patch32"``,
-            ``"openai/clip-vit-base-patch16"``,
-            ``"openai/clip-vit-large-patch14"``, etc.).
-        use_text_features: Concatenate frozen text-token embeddings onto image
-            patch tokens before projection.
-        text_prompts: List of class-descriptor strings used when
-            *use_text_features* is ``True``.
-        use_intermediate_layer: Add a learnable per-patch positional embedding
-            *after* the adapter (in CTM's ``d_input`` space).
-        clip_dtype: Precision for CLIP parameters (``"float32"`` or ``"float16"``).
-        **ctm_kwargs: Forwarded to
-            :class:`~models.ctm.ContinuousThoughtMachine`.  The constructor
-            silently forces ``backbone_type="none"`` and
-            ``positional_embedding_type="none"``.
+        clip_model_name: OpenCLIP model name (e.g., 'ViT-B-32', 'ViT-L-14')
+        pretrained: Pretrained dataset (e.g., 'laion2b_s34b_b79k', 'openai')
+        adapter_reduction: Bottleneck reduction ratio for adapter (default: 4)
+        alpha_init: Initial alpha value for adapter blend (default: 0.5)
+        use_intermediate_layer: Add learnable per-patch positional embedding
+        text_prompts: Optional dict with 'templates' and 'classes' for text prototypes
+        **ctm_kwargs: Forwarded to ContinuousThoughtMachine
     """
-
+    
     def __init__(self,
-                 clip_model_name="openai/clip-vit-base-patch32",
-                 use_text_features=False,
-                 text_prompts=None,
+                 clip_model_name="ViT-B-32",
+                 pretrained="laion2b_s34b_b79k",
+                 adapter_reduction=4,
+                 alpha_init=0.5,
                  use_intermediate_layer=False,
-                 clip_dtype="float16",
+                 text_prompts=None,
                  **ctm_kwargs):
-        from transformers import CLIPModel, CLIPProcessor
-
-        self.clip_model_name = clip_model_name
-        self.use_text_features = use_text_features
-        self.use_intermediate_layer = use_intermediate_layer
-
-        # ---- Force CLIP-adapter overrides on parent CTM kwargs ----
         ctm_kwargs['backbone_type'] = 'none'
         ctm_kwargs['positional_embedding_type'] = 'none'
-
+        ctm_kwargs['pretrained_backbone'] = None
+        
         d_input = ctm_kwargs['d_input']
-
-        # ---- Parent constructor (sets up all CTM internals) ----
+        
         super().__init__(**ctm_kwargs)
-
-        # ---- Resolve dtype ----
-        if isinstance(clip_dtype, str):
-            _dtype_map = {
-                "float16": torch.float16,
-                "float32": torch.float32,
-                "fp16": torch.float16,
-                "fp32": torch.float32,
-            }
-            clip_dtype = _dtype_map.get(clip_dtype, torch.float32)
-
-        # ---- Load frozen CLIP (ViT vision + optional text) ----
-        self.clip_model = CLIPModel.from_pretrained(clip_model_name, torch_dtype=clip_dtype)
+        
+        self.clip_model_name = clip_model_name
+        self.pretrained = pretrained
+        self.use_intermediate_layer = use_intermediate_layer
+        self.text_prompts = text_prompts
+        
+        self.clip_model, self.clip_transform, self.tokenizer = open_clip.create_model_and_transforms(
+            clip_model_name, 
+            pretrained=pretrained
+        )
         self.clip_model.eval()
+        
         for param in self.clip_model.parameters():
             param.requires_grad = False
-
-        vm = self.clip_model.vision_model
-        vc = self.clip_model.config.vision_config
-        self.n_patches = (vc.image_size // vc.patch_size) ** 2
-        self.clip_dim = vc.hidden_size
-        self.clip_dtype = clip_dtype
-
-        # ---- Optional: frozen text-token embeddings ----
-        self.clip_processor = None
-        self.text_proj = None
-        if use_text_features:
-            if text_prompts is None:
-                raise ValueError("text_prompts must be provided when use_text_features=True")
-
-            self.clip_processor = CLIPProcessor.from_pretrained(clip_model_name)
-            text_tokens = self._extract_text_tokens(text_prompts)
-            self.register_buffer('text_tokens', text_tokens)
-
-            tc = self.clip_model.config.text_config
-            if tc.hidden_size != self.clip_dim:
-                self.text_proj = nn.Linear(tc.hidden_size, self.clip_dim, bias=False)
-
-        # ---- Optional: learnable per-patch PE in CTM d_input space ----
+        
+        self.n_patches = self._get_n_patches()
+        self.clip_dim = self.clip_model.visual.output_dim
+        
+        self.backbone_adapter = CLIPBackboneAdapter(
+            self.clip_model, 
+            reduction=adapter_reduction, 
+            alpha_init=alpha_init
+        )
+        
         self.patch_pe = None
         if use_intermediate_layer:
             self.patch_pe = nn.Embedding(self.n_patches, d_input)
-
-        # ---- Learnable MLP adapter (trained while CLIP is frozen) ----
-        self.adapter = AdapterMLP(c_in=self.clip_dim, reduction=4)
-
-        # ---- Materialise kv_proj LazyLinear for DDP compatibility ----
+        
+        self.text_tokens = None
+        self.text_proj = None
+        if text_prompts is not None:
+            self._setup_text_prompts(text_prompts)
+        
         with torch.no_grad():
             n_tok = self.n_patches
-            if use_text_features and hasattr(self, 'text_tokens'):
+            if self.text_tokens is not None:
                 n_tok += self.text_tokens.shape[0]
-            self.kv_proj(torch.zeros(1, n_tok, self.clip_dim, dtype=torch.float32))
-
-    # ------------------------------------------------------------------
-    # compute_features — the single override that wires CLIP → CTM
-    # ------------------------------------------------------------------
-
+            dummy_tokens = torch.zeros(1, n_tok, self.clip_dim)
+            self.kv_proj(dummy_tokens)
+    
+    def _get_n_patches(self):
+        if hasattr(self.clip_model.visual, 'patch_size'):
+            img_size = getattr(self.clip_model.visual.image_size, 'val', 
+                             getattr(self.clip_model.visual.image_size, 'grid_size', [7, 7]))
+            if isinstance(img_size, (list, tuple)):
+                return img_size[0] * img_size[1]
+            return img_size ** 2
+        return 196
+    
+    def _setup_text_prompts(self, text_prompts):
+        """Precompute text prototypes from templates and classes."""
+        templates = text_prompts.get('templates', ["a photo of a {}"])
+        classes = text_prompts.get('classes', [])
+        
+        if not classes:
+            return
+        
+        self.tokenizer = open_clip.get_tokenizer(self.clip_model_name)
+        
+        text_prototypes = []
+        for cls in classes:
+            embeddings = []
+            for template in templates:
+                text = template.format(cls)
+                tokens = self.tokenizer([text]).to(next(self.parameters()).device)
+                with torch.no_grad():
+                    emb = self.clip_model.encode_text(tokens)
+                    emb = F.normalize(emb, dim=-1)
+                    embeddings.append(emb)
+            text_prototypes.append(torch.stack(embeddings).mean(0))
+        
+        text_prototypes = torch.stack(text_prototypes)
+        text_prototypes = F.normalize(text_prototypes, dim=-1)
+        
+        self.register_buffer('text_prototypes', text_prototypes)
+        
+        tokens_list = []
+        for cls in classes:
+            for template in templates:
+                text = template.format(cls)
+                tokens_list.append(text)
+        
+        tokens = self.tokenizer(tokens_list).to(next(self.parameters()).device)
+        with torch.no_grad():
+            self.text_tokens = self.clip_model.encode_text(tokens)
+        
+        if self.text_tokens.shape[-1] != self.clip_dim:
+            self.text_proj = nn.Linear(self.text_tokens.shape[-1], self.clip_dim, bias=False)
+    
     def compute_features(self, x):
-        """Extract frozen CLIP tokens, project into CTM's ``d_input`` space via learnable adapter."""
+        """Extract frozen CLIP tokens and apply adapter."""
         B = x.size(0)
+        
         mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=x.device).view(1, 3, 1, 1)
-        std  = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=x.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=x.device).view(1, 3, 1, 1)
         x = (x - mean) / std
-
-        with torch.no_grad():
-            tokens = self._extract_vit_patch_tokens(x).float()  # (B, N_patches, clip_dim)
-
-            if self.use_text_features:
-                text = self.text_tokens.unsqueeze(0).expand(B, -1, -1).float()
-                if self.text_proj is not None:
-                    text = self.text_proj(text)
-                tokens = torch.cat([tokens, text], dim=1)  # image first, text second
-
-        kv = self.adapter(tokens)  # Use learnable MLP adapter instead of kv_proj
-
+        
+        tokens = self.backbone_adapter(x)
+        
+        if self.text_tokens is not None:
+            text = self.text_tokens.unsqueeze(0).expand(B, -1, -1).float()
+            if self.text_proj is not None:
+                text = self.text_proj(text)
+            tokens = torch.cat([tokens, text], dim=1)
+        
         if self.patch_pe is not None:
-            positions = torch.arange(kv.size(1), device=kv.device)
-            kv = kv + self.patch_pe(positions).unsqueeze(0)
+            positions = torch.arange(tokens.size(1), device=tokens.device)
+            tokens = tokens + self.patch_pe(positions).unsqueeze(0)
+        
+        return tokens
 
-        return kv
 
-    # ------------------------------------------------------------------
-    # Private extraction helpers
-    # ------------------------------------------------------------------
-
-    def _extract_vit_patch_tokens(self, x):
-        """
-        Walk CLIP ViT: ``patch_embedding → cat CLS + add PE →
-        pre_layrnorm → encoder → post_layernorm``, drop CLS token.
-
-        Resizes input to CLIP's native resolution if the spatial dims don't
-        match (e.g. CIFAR 32×32 → 224×224).
-
-        Returns:
-            Tensor of shape ``(B, N_patches, clip_dim)``.
-        """
-        import torch.nn.functional as F
-
-        vm = self.clip_model.vision_model
-        x = x.to(dtype=vm.embeddings.patch_embedding.weight.dtype)
-
-        # Resize to CLIP's expected resolution if needed
-        target = vm.embeddings.image_size
-        if x.shape[-1] != target or x.shape[-2] != target:
-            x = F.interpolate(x, size=(target, target), mode='bilinear', align_corners=False)
-
-        # Patch embedding + CLS + positional encoding
-        hidden_states = vm.embeddings(x)
-        hidden_states = vm.pre_layrnorm(hidden_states)
-
-        # Transformer encoder
-        hidden_states = vm.encoder(inputs_embeds=hidden_states).last_hidden_state
-        hidden_states = vm.post_layernorm(hidden_states)
-
-        # Drop CLS token, keep patch tokens
-        return hidden_states[:, 1:, :]
-
-    def _extract_text_tokens(self, text_prompts):
-        """
-        Encode *text_prompts* through the frozen CLIP text transformer.
-
-        Returns **all** token positions (not just the EOS embedding), reshaped
-        to ``(n_prompts * 77, text_hidden_size)``.
-        """
-        inputs = self.clip_processor(text=text_prompts, return_tensors="pt", padding=True)
-        inputs = {k: v.to(next(self.clip_model.parameters()).device) for k, v in inputs.items()}
-
-        with torch.no_grad():
-            outputs = self.clip_model.text_model(**inputs)
-            hidden = outputs.last_hidden_state  # (n_prompts, seq_len, text_hidden_size)
-
-        return hidden.reshape(-1, hidden.shape[-1])  # (n_prompts * 77, text_hidden_size)
+def create_clip_ctm(clip_model_name="ViT-B-32", pretrained="laion2b_s34b_b79k", **kwargs):
+    """
+    Factory function to create CLIP-CTM model.
+    
+    Example usage:
+        # Basic model
+        model = create_clip_ctm('ViT-B-32', 'laion2b_s34b_b79k', d_input=512, d_model=512, iterations=5)
+        
+        # With text prototypes for zero-shot classification
+        model = create_clip_ctm(
+            'ViT-B-32', 'laion2b_s34b_b79k',
+            d_input=512, d_model=512, iterations=5,
+            text_prompts={
+                'templates': ["a photo of a {} expression", "a face showing {} emotion"],
+                'classes': ["happy", "sad", "angry", "surprised", "fearful", "disgusted", "neutral"]
+            }
+        )
+    
+    Example models:
+        - 'ViT-B-32' with 'laion2b_s34b_b79k' or 'openai'
+        - 'ViT-L-14' with 'laion2b_s32b_b82k' or 'openai'
+        - 'ViT-H-14' with 'laion2b_s32b_b82k'
+    """
+    return CLIPCTM(clip_model_name=clip_model_name, pretrained=pretrained, **kwargs)
