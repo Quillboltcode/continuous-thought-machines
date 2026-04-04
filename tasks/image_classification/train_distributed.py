@@ -45,7 +45,7 @@ def parse_args():
 
     # Model Selection
     parser.add_argument('--model', type=str, required=True,
-                        choices=['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f', 'ctm_fwpkm', 'lstm', 'ff'],
+                        choices=['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'ctm_fwpkm', 'lstm', 'ff'],
                         help='Model type to train.')
 
     parser.add_argument('--adapter_reduction', type=int, default=4,
