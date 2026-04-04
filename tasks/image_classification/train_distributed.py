@@ -80,7 +80,7 @@ def parse_args():
                         help='Convert grayscale images to 3-channel RGB.')
 
     # CTM / LSTM specific
-    parser.add_argument('--d_input', type=int, default=512, help='Dimension of the input (CTM, LSTM). Must match CLIP output dim.')
+    parser.add_argument('--d_input', type=int, default=512, help='Dimension of the input (CTM, LSTM). Must match CLIP output dim (512 for ViT-B-32).')
     parser.add_argument('--heads', type=int, default=4, help='Number of attention heads (CTM, LSTM).') 
     parser.add_argument('--iterations', type=int, default=30, help='Number of internal ticks (CTM, LSTM).') 
     parser.add_argument('--positional_embedding_type', type=str, default='none', 
