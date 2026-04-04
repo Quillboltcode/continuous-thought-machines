@@ -238,6 +238,17 @@ if __name__=='__main__':
     
     if args.text_prompts is not None:
         args.text_prompts = json.loads(args.text_prompts)
+    
+    # Set default text_prompts for RAFDB dataset
+    if args.dataset == 'RAFDB' and args.text_prompts is None:
+        args.text_prompts = {
+            'templates': [
+                "a photo of a {} expression",
+                "a face showing {}",
+                "a person with {} emotion"
+            ],
+            'classes': ["Surprise", "Fear", "Disgust", "Happiness", "Sadness", "Anger", "Neutral"]
+        }
 
     rank, world_size, local_rank = setup_ddp()
 
