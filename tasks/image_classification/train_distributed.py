@@ -309,12 +309,21 @@ if __name__=='__main__':
     model_base, ctm_gated_loss = create_model(args, prediction_reshaper)
     model_base = model_base.to(device)
 
-    # Initialize lazy modules
+    # Initialize lazy modules with proper input size
     try:
-        pseudo_inputs = train_data.__getitem__(0)[0].unsqueeze(0).to(device)
+        if args.model == 'clip_ctm':
+            pseudo_inputs = torch.randn(1, 3, args.img_size, args.img_size).to(device)
+        else:
+            pseudo_inputs = train_data.__getitem__(0)[0].unsqueeze(0).to(device)
         model_base(pseudo_inputs)
     except Exception as e:
         print(f"Warning: Pseudo forward pass failed: {e}")
+        # Fallback: try with different size
+        try:
+            pseudo_inputs = torch.randn(1, 3, 224, 224).to(device)
+            model_base(pseudo_inputs)
+        except Exception as e2:
+            print(f"Warning: Second pseudo forward pass failed: {e2}")
 
     # Wrap model with DDP
     find_unused = args.model in ('ctm_fwpkm',)  # FwPKM fast-weight path has local loss params
