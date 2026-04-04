@@ -345,6 +345,17 @@ if __name__=='__main__':
     if is_main_process(rank):
         param_count = sum(p.numel() for p in model.module.parameters() if p.requires_grad) if world_size > 1 else sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f'Total trainable params: {param_count:,}')
+        
+        # Debug: print trainable adapter params for clip_ctm
+        if args.model == 'clip_ctm':
+            model_for_debug = model.module if world_size > 1 else model
+            adapter_params = [p.numel() for n, p in model_for_debug.named_parameters() if 'adapter' in n and p.requires_grad]
+            alpha_params = [p.numel() for n, p in model_for_debug.named_parameters() if 'alpha' in n and p.requires_grad]
+            kv_proj_params = [p.numel() for n, p in model_for_debug.named_parameters() if 'kv_proj' in n and p.requires_grad]
+            print(f'  Adapter params: {sum(adapter_params):,}')
+            print(f'  Alpha params: {sum(alpha_params):,}')
+            print(f'  kv_proj params: {sum(kv_proj_params):,}')
+        
         if args.use_wandb:
             wandb.log({"Total Parameters": param_count})
 
