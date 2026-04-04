@@ -540,6 +540,15 @@ if __name__=='__main__':
             if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f', 'ctm_fwpkm', 'lstm']:
                 accuracy_local = (predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain] == targets).float().mean().item()
                 pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f}'
+                
+                # Log alpha value for clip_ctm
+                if args.model == 'clip_ctm' and bi % 500 == 0:
+                    model_for_log = model.module if world_size > 1 else model
+                    if hasattr(model_for_log, 'backbone_adapter') and hasattr(model_for_log.backbone_adapter, 'alpha'):
+                        alpha_val = model_for_log.backbone_adapter.alpha.data.item()
+                        print(f"  [iter {bi}] alpha = {alpha_val:.4f}")
+                        if args.use_wandb:
+                            wandb.log({"alpha": alpha_val, "iteration": bi})
             elif args.model == 'ff':
                 accuracy_local = (predictions.argmax(1) == targets).float().mean().item()
                 pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f}'
