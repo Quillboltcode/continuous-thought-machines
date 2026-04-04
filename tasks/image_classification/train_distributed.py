@@ -102,8 +102,8 @@ def parse_args():
     parser.add_argument('--deep_memory', action=argparse.BooleanOptionalAction, default=True, help='Use deep memory.')
     parser.add_argument('--memory_hidden_dims', type=int, default=16, help='Hidden dims for deep memory.')
     parser.add_argument('--dropout_nlm', type=float, default=None, help='Dropout for NLMs.')
-    parser.add_argument('--do_normalisation', action=argparse.BooleanOptionalAction, default=False, 
-                        help='Apply normalization in NLMs.')
+    parser.add_argument('--do_normalisation', type=lambda x: x.lower() == 'true', default=False,
+                        help='Apply normalization in NLMs. Use --do_normalisation true or --do_normalisation false.')
 
     # CTM-Gated specific
     parser.add_argument('--exit_strategy', type=str, default='certainty',
