@@ -204,6 +204,9 @@ class CLIPCTM(ContinuousThoughtMachine):
         with torch.no_grad():
             self.text_tokens = self.clip_model.encode_text(tokens)
         
+        # Move text tokens to same device as model
+        self.text_tokens = self.text_tokens.to(next(self.parameters()).device)
+        
         if self.text_tokens.shape[-1] != self.clip_dim:
             self.text_proj = nn.Linear(self.text_tokens.shape[-1], self.clip_dim, bias=False)
     

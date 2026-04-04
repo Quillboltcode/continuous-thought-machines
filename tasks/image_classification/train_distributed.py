@@ -325,6 +325,15 @@ if __name__=='__main__':
     if args.model == 'clip_ctm':
         try:
             print("Initializing lazy modules for clip_ctm...")
+            # First initialize model on CPU, then move to device
+            model_base.to('cpu')
+            for _ in range(3):
+                pseudo_inputs = torch.randn(2, 3, args.img_size, args.img_size)
+                with torch.no_grad():
+                    _ = model_base(pseudo_inputs)
+            # Then move to device
+            model_base = model_base.to(device)
+            # Run again on device to initialize remaining lazy modules
             for _ in range(3):
                 pseudo_inputs = torch.randn(2, 3, args.img_size, args.img_size).to(device)
                 with torch.no_grad():
