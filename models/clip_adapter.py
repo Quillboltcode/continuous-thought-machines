@@ -24,7 +24,7 @@ class CLIPBackboneAdapter(nn.Module):
     def __init__(self, clip_model, reduction=4, alpha_init=0.5):
         super().__init__()
         self.clip_visual = clip_model.visual
-        d = self.clip_visual.output_dim
+        d = self.clip_visual.transformer.width  # raw transformer output dim
         
         for param in self.clip_visual.parameters():
             param.requires_grad = False
@@ -132,7 +132,7 @@ class CLIPAdapterBaseline(nn.Module):
         for param in self.clip_model.parameters():
             param.requires_grad = False
         
-        self.clip_dim = self.clip_model.visual.output_dim
+        self.clip_dim = self.clip_model.visual.transformer.width  # raw transformer width
         
         self.backbone_adapter = CLIPBackboneAdapter(
             self.clip_model, 
