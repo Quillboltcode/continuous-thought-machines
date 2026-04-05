@@ -136,9 +136,8 @@ class CLIPAdapterBaseline(nn.Module):
         if use_text_prompts and text_prompts is not None:
             self._setup_text_prompts(text_prompts)
         
-        # Compute input dim: CLIP features + text features (if any)
-        text_dim = self.text_tokens.shape[-1] if self.text_tokens is not None else 0
-        input_dim = self.clip_dim + text_dim
+        # Compute input dim: CLIP features only (text prompts not used for classification)
+        input_dim = self.clip_dim
         
         # Linear classifier (linear probe style)
         self.classifier = nn.Linear(input_dim, num_classes)

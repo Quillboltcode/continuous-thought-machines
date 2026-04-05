@@ -322,7 +322,7 @@ if __name__=='__main__':
 
     # Initialize lazy modules with proper input size
     # Must run multiple times to ensure all lazy modules are initialized
-    if args.model in ('clip_ctm', 'clip_adapter'):
+    if args.model == 'clip_ctm':
         try:
             print(f"Initializing lazy modules for {args.model}...")
             # First initialize model on CPU, then move to device
@@ -343,6 +343,9 @@ if __name__=='__main__':
             print(f"Warning: Pseudo forward pass failed: {e}")
             import traceback
             traceback.print_exc()
+    elif args.model == 'clip_adapter':
+        # clip_adapter doesn't have lazy modules, just move to device
+        model_base = model_base.to(device)
 
     # Wrap model with DDP
     find_unused = args.model in ('ctm_fwpkm', 'clip_ctm', 'clip_adapter')  # These models may have unused parameters
