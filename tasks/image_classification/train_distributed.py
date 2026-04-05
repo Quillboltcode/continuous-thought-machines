@@ -322,9 +322,9 @@ if __name__=='__main__':
 
     # Initialize lazy modules with proper input size
     # Must run multiple times to ensure all lazy modules are initialized
-    if args.model == 'clip_ctm':
+    if args.model in ('clip_ctm', 'clip_adapter'):
         try:
-            print("Initializing lazy modules for clip_ctm...")
+            print(f"Initializing lazy modules for {args.model}...")
             # First initialize model on CPU, then move to device
             model_base.to('cpu')
             for _ in range(3):
@@ -562,7 +562,7 @@ if __name__=='__main__':
         if is_main_process(rank):
             accuracy_local = 0.0
             selected_tick = -1
-            if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'clip_adapter', 'clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f', 'ctm_fwpkm', 'lstm']:
+            if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f', 'ctm_fwpkm', 'lstm']:
                 accuracy_local = (predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain] == targets).float().mean().item()
                 selected_tick = where_most_certain.float().mean().item() if where_most_certain is not None else -1
                 pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f} Tick={selected_tick:.1f}'
@@ -584,6 +584,21 @@ if __name__=='__main__':
                             "Selected Tick": selected_tick,
                             "Iteration": bi,
                         })
+            elif args.model == 'clip_adapter':
+                accuracy_local = (logits.argmax(1) == targets).float().mean().item()
+                pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f}'
+                if args.use_wandb and bi % 100 == 0:
+                    model_for_log = model.module if world_size > 1 else model
+                    alpha_val = 0.5
+                    if hasattr(model_for_log, 'backbone_adapter') and hasattr(model_for_log.backbone_adapter, 'alpha'):
+                        alpha_val = model_for_log.backbone_adapter.alpha.data.item()
+                    wandb.log({
+                        "Train Loss": loss_log.item(),
+                        "Train Accuracy": accuracy_local,
+                        "Learning Rate": current_lr,
+                        "Alpha": alpha_val,
+                        "Iteration": bi,
+                    })
             elif args.model == 'ff':
                 accuracy_local = (predictions.argmax(1) == targets).float().mean().item()
                 pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f}'
