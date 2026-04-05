@@ -7,6 +7,7 @@ from models.ctm_FwPKM import CTMFwPKMNeuralComputer
 from models.lstm import LSTMBaseline
 from models.ff import FFBaseline
 from models.clip_ctm import CLIPCTM
+from models.clip_adapter import CLIPAdapterBaseline
 
 
 def create_model(args, prediction_reshaper=None):
@@ -176,6 +177,26 @@ def create_model(args, prediction_reshaper=None):
             dropout_nlm=args.dropout_nlm,
             neuron_select_type=args.neuron_select_type,
             n_random_pairing_self=args.n_random_pairing_self,
+        )
+    # CLIP-Adapter baseline (no CTM, linear probe)
+    elif args.model == "clip_adapter":
+        text_prompts = None
+        if args.dataset in ['RAFDB', 'FerPlusPlus', 'affectnet']:
+            text_prompts = {
+                'templates': ["a photo of a {} expression", "a face showing {}"],
+                'classes': ["Surprise", "Fear", "Disgust", "Happiness", "Sadness", "Anger", "Neutral"]
+            }
+        elif hasattr(args, 'text_prompts') and args.text_prompts is not None:
+            text_prompts = args.text_prompts
+        
+        model = CLIPAdapterBaseline(
+            clip_model_name=getattr(args, 'clip_model_name', 'ViT-B-32'),
+            pretrained=getattr(args, 'clip_pretrained', 'laion2b_s34b_b79k'),
+            adapter_reduction=getattr(args, 'adapter_reduction', 4),
+            alpha_init=getattr(args, 'alpha_init', 0.5),
+            num_classes=args.out_dims,
+            use_text_prompts=(text_prompts is not None),
+            text_prompts=text_prompts,
         )
     # clip_ctm_adapter_* removed - will be reimplemented with open_clip
     elif args.model == "lstm":

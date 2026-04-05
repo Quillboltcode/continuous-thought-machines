@@ -45,7 +45,7 @@ def parse_args():
 
     # Model Selection
     parser.add_argument('--model', type=str, required=True,
-                        choices=['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'ctm_fwpkm', 'lstm', 'ff'],
+                        choices=['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'clip_adapter', 'ctm_fwpkm', 'lstm', 'ff'],
                         help='Model type to train.')
 
     parser.add_argument('--adapter_reduction', type=int, default=4,
@@ -345,7 +345,7 @@ if __name__=='__main__':
             traceback.print_exc()
 
     # Wrap model with DDP
-    find_unused = args.model in ('ctm_fwpkm', 'clip_ctm')  # These models may have unused parameters
+    find_unused = args.model in ('ctm_fwpkm', 'clip_ctm', 'clip_adapter')  # These models may have unused parameters
     if device.type == 'cuda' and world_size > 1:
         model = DDP(model_base, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused)
     elif device.type == 'cpu' and world_size > 1:
@@ -529,6 +529,10 @@ if __name__=='__main__':
             elif args.model == 'clip_ctm':
                 predictions, certainties, synchronisation = model(inputs)
                 loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
+            elif args.model == 'clip_adapter':
+                logits = model(inputs)
+                loss = nn.CrossEntropyLoss()(logits, targets)
+                where_most_certain = None
             elif args.model in ['clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f']:
                 predictions, certainties, synchronisation = model(inputs)
                 loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
@@ -558,7 +562,7 @@ if __name__=='__main__':
         if is_main_process(rank):
             accuracy_local = 0.0
             selected_tick = -1
-            if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f', 'ctm_fwpkm', 'lstm']:
+            if args.model in ['ctm', 'ctm_gated', 'ctm_with_innovations', 'clip_ctm', 'clip_adapter', 'clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f', 'ctm_fwpkm', 'lstm']:
                 accuracy_local = (predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain] == targets).float().mean().item()
                 selected_tick = where_most_certain.float().mean().item() if where_most_certain is not None else -1
                 pbar_desc = f'Loss(avg)={loss_log.item():.3f} Acc(loc)={accuracy_local:.3f} LR={current_lr:.6f} Tick={selected_tick:.1f}'
@@ -624,6 +628,10 @@ if __name__=='__main__':
                             preds_eval = predictions.argmax(1)[torch.arange(predictions.size(0), device=device), where_most_certain]
                             if where_most_certain is not None:
                                 total_eval_tick += where_most_certain.float().sum()
+                        elif args.model == 'clip_adapter':
+                            logits = model(inputs)
+                            loss_eval = nn.CrossEntropyLoss()(logits, targets)
+                            preds_eval = logits.argmax(1)
                         elif args.model in ['clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f']:
                             predictions, certainties, _ = model(inputs)
                             loss_eval, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
