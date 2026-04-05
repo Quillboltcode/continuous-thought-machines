@@ -192,28 +192,8 @@ class CLIPAdapterBaseline(nn.Module):
         # Pool visual features (mean over patches)
         pooled_visual = visual_features.mean(dim=1)  # (B, clip_dim)
         
-        # Concatenate text features if available
-        if self.text_tokens is not None:
-            text = self.text_tokens.to(x.device)  # (num_classes, clip_dim)
-            # Use text features as additional context - expand to batch size
-            # For classification, we use visual features to predict
-            # Text features can be used for zero-shot or as additional input
-            if self.text_proj is not None:
-                text = self.text_proj(text)
-        
-        # Concatenate visual with text class prototypes
-        if self.text_tokens is not None:
-            # Use text prototypes for zero-shot-like classification
-            text = self.text_tokens.to(x.device)
-            if self.text_proj is not None:
-                text = self.text_proj(text)
-            # Compute similarity with text prototypes
-            pooled_visual = pooled_visual / pooled_visual.norm(dim=-1, keepdim=True)
-            text = text / text.norm(dim=-1, keepdim=True)
-            logits = pooled_visual @ text.T  # (B, num_classes)
-        else:
-            # Use linear classifier
-            logits = self.classifier(pooled_visual)
+        # Use linear classifier
+        logits = self.classifier(pooled_visual)
         
         if return_features:
             return pooled_visual, logits
