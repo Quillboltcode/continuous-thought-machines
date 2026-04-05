@@ -35,18 +35,25 @@ class CLIPBackboneAdapter(nn.Module):
             nn.Linear(d // reduction, d, bias=False),
             nn.ReLU()
         )
-        self.alpha = nn.Parameter(torch.tensor(alpha_init))
+        self.alpha_raw = nn.Parameter(torch.tensor(alpha_init))
         
         self.output_dim = d
-        self.mean = torch.tensor([0.48145466, 0.4578275, 0.40821073])
-        self.std = torch.tensor([0.26862954, 0.26130258, 0.27577711])
+        self.register_buffer('mean', torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1))
+        self.register_buffer('std', torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1))
+    
+    @property
+    def alpha(self):
+        return torch.sigmoid(self.alpha_raw)
     
     def _extract_patch_tokens(self, x):
-        """Extract patch tokens from frozen CLIP visual encoder."""
+        """Extract patch tokens from frozen CLIP visual encoder.
+        
+        Follows OpenCLIP's standard forward: ln_post only on CLS token, then project only CLS.
+        """
         B = x.shape[0]
         
-        mean = self.mean.to(x.device).view(1, 3, 1, 1)
-        std = self.std.to(x.device).view(1, 3, 1, 1)
+        mean = self.mean.to(x.device)
+        std = self.std.to(x.device)
         x_norm = (x - mean) / std
         
         patch_tokens = self.clip_visual.conv1(x_norm)
@@ -59,12 +66,16 @@ class CLIPBackboneAdapter(nn.Module):
         
         tokens = self.clip_visual.ln_pre(tokens)
         tokens = self.clip_visual.transformer(tokens)
-        tokens = self.clip_visual.ln_post(tokens)
         
-        tokens = tokens @ self.clip_visual.proj
+        # OpenCLIP standard: ln_post and projection applied only to CLS token
+        cls_token_out = self.clip_visual.ln_post(tokens[:, 0, :])
+        cls_token_out = cls_token_out @ self.clip_visual.proj
         
-        patch_tokens = tokens[:, 1:, :]
-        return patch_tokens
+        # For patch tokens, use the raw transformer output (no ln_post, no projection)
+        # This matches how OpenCLIP was trained - patch features are used directly
+        patch_tokens_out = tokens[:, 1:, :]
+        
+        return patch_tokens_out
     
     def forward(self, x):
         with torch.no_grad():
@@ -130,72 +141,51 @@ class CLIPAdapterBaseline(nn.Module):
         )
         
         self.text_tokens = None
-        self.text_proj = None
-        
-        # Process text prompts if provided
         if use_text_prompts and text_prompts is not None:
             self._setup_text_prompts(text_prompts)
         
-        # Compute input dim: CLIP features only (text prompts not used for classification)
-        input_dim = self.clip_dim
-        
-        # Linear classifier (linear probe style)
-        self.classifier = nn.Linear(input_dim, num_classes)
-        
-        # Initialize classifier
+        self.classifier = nn.Linear(self.clip_dim, num_classes)
         nn.init.xavier_uniform_(self.classifier.weight)
         nn.init.zeros_(self.classifier.bias)
     
     def _setup_text_prompts(self, text_prompts):
-        """Precompute text features from templates and classes."""
         templates = text_prompts.get('templates', ["a photo of a {}"])
         classes = text_prompts.get('classes', [])
         
         if not classes:
             return
         
-        self.tokenizer = open_clip.get_tokenizer(self.clip_model_name)
+        tokenizer = open_clip.get_tokenizer(self.clip_model_name)
         
-        # Encode text prompts
-        text_features = []
+        text_tokens_list = []
         for cls in classes:
             for template in templates:
-                text = template.format(cls)
-                tokens = self.tokenizer([text]).to(next(self.parameters()).device)
-                with torch.no_grad():
-                    emb = self.clip_model.encode_text(tokens)
-                    text_features.append(emb)
+                text_tokens_list.append(template.format(cls))
         
-        self.text_tokens = torch.stack(text_features).mean(0)  # (num_classes, clip_dim)
+        tokens = tokenizer(text_tokens_list).to(next(self.parameters()).device)
+        with torch.no_grad():
+            all_embeds = self.clip_model.encode_text(tokens)
         
-        if self.text_tokens.shape[-1] != self.clip_dim:
-            self.text_proj = nn.Linear(self.text_tokens.shape[-1], self.clip_dim, bias=False)
+        all_embeds = all_embeds.reshape(len(classes), len(templates), -1)
+        self.text_tokens = all_embeds.mean(dim=1)
     
-    def forward(self, x, return_features=False):
-        """
-        Forward pass.
+    def forward(self, x, return_features=False, return_text_features=False):
+        visual_features = self.backbone_adapter(x)
+        pooled = visual_features.mean(dim=1)
+        pooled = F.normalize(pooled, dim=-1)
         
-        Args:
-            x: Input images (B, 3, H, W)
-            return_features: If True, return features + logits
-        
-        Returns:
-            logits: (B, num_classes) if return_features=False
-            (features, logits): if return_features=True
-        """
-        B = x.size(0)
-        
-        # Get adapted visual features
-        visual_features = self.backbone_adapter(x)  # (B, n_patches, clip_dim)
-        
-        # Pool visual features (mean over patches)
-        pooled_visual = visual_features.mean(dim=1)  # (B, clip_dim)
-        
-        # Use linear classifier
-        logits = self.classifier(pooled_visual)
+        if self.use_text_prompts and self.text_tokens is not None:
+            text_features = F.normalize(self.text_tokens.to(pooled.device), dim=-1)
+            if return_text_features:
+                return pooled, text_features
+            logits = pooled @ text_features.T * self.clip_model.logit_scale.exp()
+        else:
+            if return_text_features:
+                raise ValueError("return_text_features=True but text prompts not enabled")
+            logits = self.classifier(pooled)
         
         if return_features:
-            return pooled_visual, logits
+            return pooled, logits
         return logits
 
 

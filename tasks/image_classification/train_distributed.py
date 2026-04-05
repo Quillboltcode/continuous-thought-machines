@@ -533,7 +533,9 @@ if __name__=='__main__':
                 predictions, certainties, synchronisation = model(inputs)
                 loss, where_most_certain = image_classification_loss(predictions, certainties, targets, use_most_certain=True)
             elif args.model == 'clip_adapter':
-                logits = model(inputs)
+                pooled, text_features = model(inputs, return_text_features=True)
+                temperature = model.module.clip_model.logit_scale.exp() if world_size > 1 else model.clip_model.logit_scale.exp()
+                logits = temperature * torch.matmul(pooled, text_features.T)
                 loss = nn.CrossEntropyLoss()(logits, targets)
                 where_most_certain = None
             elif args.model in ['clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f']:
@@ -647,7 +649,9 @@ if __name__=='__main__':
                             if where_most_certain is not None:
                                 total_eval_tick += where_most_certain.float().sum()
                         elif args.model == 'clip_adapter':
-                            logits = model(inputs)
+                            pooled, text_features = model(inputs, return_text_features=True)
+                            temperature = model.module.clip_model.logit_scale.exp() if world_size > 1 else model.clip_model.logit_scale.exp()
+                            logits = temperature * torch.matmul(pooled, text_features.T)
                             loss_eval = nn.CrossEntropyLoss()(logits, targets)
                             preds_eval = logits.argmax(1)
                         elif args.model in ['clip_ctm_adapter_a', 'clip_ctm_adapter_b', 'clip_ctm_adapter_c', 'clip_ctm_adapter_d', 'clip_ctm_adapter_e', 'clip_ctm_adapter_f']:

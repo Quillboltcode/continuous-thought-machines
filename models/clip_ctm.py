@@ -35,18 +35,25 @@ class CLIPBackboneAdapter(nn.Module):
             nn.Linear(d // reduction, d, bias=False),
             nn.ReLU()
         )
-        self.alpha = nn.Parameter(torch.tensor(alpha_init))
+        self.alpha_raw = nn.Parameter(torch.tensor(alpha_init))
         
         self.output_dim = d
-        self.mean = torch.tensor([0.48145466, 0.4578275, 0.40821073])
-        self.std = torch.tensor([0.26862954, 0.26130258, 0.27577711])
+        self.register_buffer('mean', torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1))
+        self.register_buffer('std', torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1))
+    
+    @property
+    def alpha(self):
+        return torch.sigmoid(self.alpha_raw)
     
     def _extract_patch_tokens(self, x):
-        """Extract patch tokens from frozen CLIP visual encoder."""
+        """Extract patch tokens from frozen CLIP visual encoder.
+        
+        Follows OpenCLIP's standard forward: ln_post only on CLS token, then project only CLS.
+        """
         B = x.shape[0]
         
-        mean = self.mean.to(x.device).view(1, 3, 1, 1)
-        std = self.std.to(x.device).view(1, 3, 1, 1)
+        mean = self.mean.to(x.device)
+        std = self.std.to(x.device)
         x_norm = (x - mean) / std
         
         patch_tokens = self.clip_visual.conv1(x_norm)
@@ -59,12 +66,15 @@ class CLIPBackboneAdapter(nn.Module):
         
         tokens = self.clip_visual.ln_pre(tokens)
         tokens = self.clip_visual.transformer(tokens)
-        tokens = self.clip_visual.ln_post(tokens)
         
-        tokens = tokens @ self.clip_visual.proj
+        # OpenCLIP standard: ln_post and projection applied only to CLS token
+        cls_token_out = self.clip_visual.ln_post(tokens[:, 0, :])
+        cls_token_out = cls_token_out @ self.clip_visual.proj
         
-        patch_tokens = tokens[:, 1:, :]
-        return patch_tokens
+        # For patch tokens, use the raw transformer output (no ln_post, no projection)
+        patch_tokens_out = tokens[:, 1:, :]
+        
+        return patch_tokens_out
     
     def forward(self, x):
         with torch.no_grad():
@@ -147,7 +157,7 @@ class CLIPCTM(ContinuousThoughtMachine):
             self.patch_pe = nn.Embedding(self.n_patches, d_input)
         
         self.text_tokens = None
-        self.text_proj = None
+        self.text_prototypes = None
         if text_prompts is not None:
             self._setup_text_prompts(text_prompts)
         
@@ -178,34 +188,32 @@ class CLIPCTM(ContinuousThoughtMachine):
         self.tokenizer = open_clip.get_tokenizer(self.clip_model_name)
         
         text_prototypes = []
+        text_tokens_list = []
+        
         for cls in classes:
-            embeddings = []
+            cls_embeddings = []
             for template in templates:
                 text = template.format(cls)
                 tokens = self.tokenizer([text]).to(next(self.parameters()).device)
                 with torch.no_grad():
                     emb = self.clip_model.encode_text(tokens)
                     emb = F.normalize(emb, dim=-1)
-                    embeddings.append(emb)
-            text_prototypes.append(torch.stack(embeddings).mean(0))
+                    cls_embeddings.append(emb)
+                    text_tokens_list.append(text)
+            
+            text_prototypes.append(torch.stack(cls_embeddings).mean(0))
         
         text_prototypes = torch.stack(text_prototypes)
         text_prototypes = F.normalize(text_prototypes, dim=-1)
         
         self.register_buffer('text_prototypes', text_prototypes)
         
-        tokens_list = []
-        for cls in classes:
-            for template in templates:
-                text = template.format(cls)
-                tokens_list.append(text)
-        
-        tokens = self.tokenizer(tokens_list).to(next(self.parameters()).device)
+        tokens = self.tokenizer(text_tokens_list).to(next(self.parameters()).device)
         with torch.no_grad():
-            self.text_tokens = self.clip_model.encode_text(tokens)
+            all_text_embeds = self.clip_model.encode_text(tokens)
         
-        if self.text_tokens.shape[-1] != self.clip_dim:
-            self.text_proj = nn.Linear(self.text_tokens.shape[-1], self.clip_dim, bias=False)
+        all_text_embeds = all_text_embeds.reshape(len(classes), len(templates), -1)
+        self.text_tokens = all_text_embeds.mean(dim=1)
     
     def compute_features(self, x):
         """Extract frozen CLIP tokens and apply adapter."""
@@ -219,8 +227,6 @@ class CLIPCTM(ContinuousThoughtMachine):
         
         if self.text_tokens is not None:
             text = self.text_tokens.to(x.device).unsqueeze(0).expand(B, -1, -1).float()
-            if self.text_proj is not None:
-                text = self.text_proj(text)
             tokens = torch.cat([tokens, text], dim=1)
         
         if self.patch_pe is not None:
