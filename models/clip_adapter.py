@@ -192,7 +192,6 @@ class CLIPAdapterBaseline(nn.Module):
         self.clip_dim = self.backbone_adapter.output_dim  # projected dim (512)
         
         self.tokenizer = open_clip.get_tokenizer(self.clip_model_name)
-        self.text_tokens = None
         if use_text_prompts and text_prompts is not None:
             self._setup_text_prompts(text_prompts)
         
@@ -220,9 +219,9 @@ class CLIPAdapterBaseline(nn.Module):
             text_tokens=tokens
         )
         
-        # Store adapted text features per class
-        all_embeds = text_adapted.reshape(len(classes), len(templates), -1)
-        self.text_tokens = all_embeds.mean(dim=1)
+        # Store adapted text features per class (clone to detach from graph)
+        all_embeds = text_adapted.reshape(len(classes), len(templates), -1).detach()
+        self.register_buffer('text_tokens', all_embeds.mean(dim=1))
     
     def forward(self, x, return_features=False, return_text_features=False):
         visual_features = self.backbone_adapter(x)
