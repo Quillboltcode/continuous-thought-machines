@@ -24,20 +24,25 @@ class CLIPBackboneAdapter(nn.Module):
     def __init__(self, clip_model, reduction=4, alpha_init=0.5):
         super().__init__()
         self.clip_visual = clip_model.visual
-        d = self.clip_visual.transformer.width  # raw transformer output dim
+        d_raw = self.clip_visual.transformer.width  # raw transformer output dim (768 for ViT-B-32)
+        d_proj = self.clip_visual.output_dim  # projected dim (512)
         
         for param in self.clip_visual.parameters():
             param.requires_grad = False
         
         self.adapter = nn.Sequential(
-            nn.Linear(d, d // reduction, bias=False),
+            nn.Linear(d_raw, d_raw // reduction, bias=False),
             nn.ReLU(),
-            nn.Linear(d // reduction, d, bias=False),
+            nn.Linear(d_raw // reduction, d_raw, bias=False),
             nn.ReLU()
         )
+        
+        # Project from raw transformer width to projected dim
+        self.proj = nn.Linear(d_raw, d_proj, bias=False)
+        
         self.alpha_raw = nn.Parameter(torch.tensor(alpha_init))
         
-        self.output_dim = d
+        self.output_dim = d_proj
         self.register_buffer('mean', torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1))
         self.register_buffer('std', torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1))
     
@@ -82,6 +87,8 @@ class CLIPBackboneAdapter(nn.Module):
             tokens = self._extract_patch_tokens(x)
         
         adapted = self.alpha * self.adapter(tokens) + (1 - self.alpha) * tokens
+        # Project from raw transformer width (768) to projected dim (512)
+        adapted = self.proj(adapted)
         return adapted
 
 

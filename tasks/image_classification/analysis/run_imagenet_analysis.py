@@ -26,6 +26,7 @@ from torchvision import datasets # Only used for CIFAR100 in debug mode
 from scipy import ndimage # Used in find_island_centers
 from data.custom_datasets import ImageNet 
 from models.ctm import ContinuousThoughtMachine 
+from models.ctm_FwPKM import CTMFwPKMNeuralComputer
 from tasks.image_classification.imagenet_classes import IMAGENET2012_CLASSES 
 from tasks.image_classification.plotting import plot_neural_dynamics
 
@@ -134,34 +135,78 @@ if __name__=='__main__':
     if not hasattr(model_args, 'neuron_select_type'):
         model_args.neuron_select_type = 'first-last'
 
-
-    # Instantiate Model based on checkpoint args
-    print("Instantiating CTM model...")
     # Handle grayscale - default to False for legacy checkpoints
     use_grayscale = getattr(model_args, 'grayscale', False)
     pretrained_backbone = getattr(model_args, 'pretrained_backbone', None)
-    model = ContinuousThoughtMachine(
-        iterations=model_args.iterations,
-        d_model=model_args.d_model,
-        d_input=model_args.d_input,
-        heads=model_args.heads,
-        n_synch_out=model_args.n_synch_out,
-        n_synch_action=model_args.n_synch_action,
-        synapse_depth=model_args.synapse_depth,
-        memory_length=model_args.memory_length,
-        deep_nlms=model_args.deep_memory,
-        memory_hidden_dims=model_args.memory_hidden_dims,
-        do_layernorm_nlm=model_args.do_normalisation,
-        backbone_type=model_args.backbone_type,
-        positional_embedding_type=model_args.positional_embedding_type,
-        out_dims=model_args.out_dims,
-        prediction_reshaper=[-1], # Kept fixed value from original code
-        dropout=0, # No dropout for eval
-        neuron_select_type=model_args.neuron_select_type,
-        n_random_pairing_self=model_args.n_random_pairing_self,
-        grayscale=use_grayscale,
-        pretrained_backbone=pretrained_backbone,
-    ).to(device)
+
+    # Check if checkpoint has FWPKM keys
+    has_fwpkm = any('fwpkm' in key for key in checkpoint['model_state_dict'].keys())
+    if has_fwpkm:
+        print("Detected FWPKM model, using CTMFwPKMNeuralComputer...")
+        # Get FWPKM parameters from checkpoint or use defaults
+        fwpkm_d_key = getattr(model_args, 'fwpkm_d_key', 64)
+        fwpkm_d_val = getattr(model_args, 'fwpkm_d_val', 128)
+        fwpkm_n_mem = getattr(model_args, 'fwpkm_n_mem', 1024)
+        fwpkm_top_k = getattr(model_args, 'fwpkm_top_k', 8)
+        fwpkm_lr = getattr(model_args, 'fwpkm_lr', 0.1)
+        fwpkm_chunk_size = getattr(model_args, 'fwpkm_chunk_size', 16)
+        
+        model = CTMFwPKMNeuralComputer(
+            iterations=model_args.iterations,
+            d_model=model_args.d_model,
+            d_input=model_args.d_input,
+            heads=model_args.heads,
+            n_synch_out=model_args.n_synch_out,
+            n_synch_action=model_args.n_synch_action,
+            synapse_depth=model_args.synapse_depth,
+            memory_length=model_args.memory_length,
+            deep_nlms=model_args.deep_memory,
+            memory_hidden_dims=model_args.memory_hidden_dims,
+            do_layernorm_nlm=model_args.do_normalisation,
+            backbone_type=model_args.backbone_type,
+            positional_embedding_type=getattr(model_args, 'positional_embedding_type', 'none'),
+            out_dims=model_args.out_dims,
+            prediction_reshaper=[-1],
+            dropout=0,
+            neuron_select_type=model_args.neuron_select_type,
+            n_random_pairing_self=getattr(model_args, 'n_random_pairing_self', 0),
+            grayscale=use_grayscale,
+            pretrained_backbone=pretrained_backbone,
+            fwpkm_d_key=fwpkm_d_key,
+            fwpkm_d_val=fwpkm_d_val,
+            fwpkm_n_mem=fwpkm_n_mem,
+            fwpkm_top_k=fwpkm_top_k,
+            fwpkm_lr=fwpkm_lr,
+            fwpkm_chunk_size=fwpkm_chunk_size,
+        ).to(device)
+    else:
+        # Instantiate Model based on checkpoint args
+        print("Instantiating CTM model...")
+        # Handle grayscale - default to False for legacy checkpoints
+        use_grayscale = getattr(model_args, 'grayscale', False)
+        pretrained_backbone = getattr(model_args, 'pretrained_backbone', None)
+        model = ContinuousThoughtMachine(
+            iterations=model_args.iterations,
+            d_model=model_args.d_model,
+            d_input=model_args.d_input,
+            heads=model_args.heads,
+            n_synch_out=model_args.n_synch_out,
+            n_synch_action=model_args.n_synch_action,
+            synapse_depth=model_args.synapse_depth,
+            memory_length=model_args.memory_length,
+            deep_nlms=model_args.deep_memory,
+            memory_hidden_dims=model_args.memory_hidden_dims,
+            do_layernorm_nlm=model_args.do_normalisation,
+            backbone_type=model_args.backbone_type,
+            positional_embedding_type=model_args.positional_embedding_type,
+            out_dims=model_args.out_dims,
+            prediction_reshaper=[-1], # Kept fixed value from original code
+            dropout=0, # No dropout for eval
+            neuron_select_type=model_args.neuron_select_type,
+            n_random_pairing_self=model_args.n_random_pairing_self,
+            grayscale=use_grayscale,
+            pretrained_backbone=pretrained_backbone,
+        ).to(device)
 
     # Load weights into model
     load_result = model.load_state_dict(checkpoint['model_state_dict'], strict=False)

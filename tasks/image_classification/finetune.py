@@ -5,6 +5,8 @@ import wandb
 import numpy as np
 import torch
 import torch.nn as nn
+import timm
+from transformers import CLIPVisionModel, CLIPProcessor
 
 if torch.cuda.is_available():
     torch.set_float32_matmul_precision("high")
@@ -34,6 +36,10 @@ def parse_args():
     parser.add_argument("--conv1_channels", type=int, default=3, help="Number of input channels for conv1 (1 for grayscale, 3 for RGB)")
     parser.add_argument("--conv1_kernel_size", type=int, default=7, help="Kernel size for conv1")
     parser.add_argument("--convert_grayscale_to_rgb", action="store_true", default=False, help="Convert grayscale images to 3-channel RGB")
+    
+    parser.add_argument("--model_type", type=str, default="torchvision", choices=["torchvision", "timm", "clip"], help="Model type: torchvision (resnet), timm (ViT), clip (CLIP)")
+    parser.add_argument("--freeze_backbone", action="store_true", default=False, help="Freeze backbone and train only classifier head")
+    parser.add_argument("--clip_model_name", type=str, default="openai/clip-vit-base-patch32", help="CLIP model name (for clip model_type)")
 
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training.")
     parser.add_argument("--batch_size_test", type=int, default=32, help="Batch size for testing.")
@@ -68,32 +74,76 @@ def parse_args():
 
 
 class FinetuneModel(nn.Module):
-    def __init__(self, backbone_name, num_classes, pretrained=True, grayscale=False, conv1_channels=3, conv1_kernel_size=7):
+    def __init__(self, backbone_name, num_classes, pretrained=True, grayscale=False, conv1_channels=3, conv1_kernel_size=7, model_type="torchvision", freeze_backbone=False, clip_model_name="openai/clip-vit-base-patch32"):
         super().__init__()
         self.grayscale = grayscale
+        self.model_type = model_type
+        self.freeze_backbone = freeze_backbone
+        in_features = None
         
-        if backbone_name == "resnet18":
-            self.backbone = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None)
-        elif backbone_name == "resnet34":
-            self.backbone = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1 if pretrained else None)
-        elif backbone_name == "resnet50":
-            self.backbone = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1 if pretrained else None)
+        if model_type == "clip":
+            self.backbone = CLIPVisionModel.from_pretrained(clip_model_name)
+            in_features = self.backbone.config.hidden_size
+            self.backbone.eval()
+            if freeze_backbone:
+                for param in self.backbone.parameters():
+                    param.requires_grad = False
+        elif model_type == "timm":
+            if backbone_name == "vit-tiny":
+                model_name = "vit_tiny_patch16_224"
+            elif backbone_name == "vit-small":
+                model_name = "vit_small_patch16_224"
+            elif backbone_name == "vit-base":
+                model_name = "vit_base_patch16_224"
+            elif backbone_name == "vit-large":
+                model_name = "vit_large_patch16_224"
+            else:
+                model_name = backbone_name
+            self.backbone = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
+            in_features = self.backbone.embed_dim
+            if freeze_backbone:
+                for param in self.backbone.parameters():
+                    param.requires_grad = False
         else:
-            raise ValueError(f"Unsupported backbone: {backbone_name}")
+            if backbone_name == "resnet18":
+                self.backbone = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None)
+            elif backbone_name == "resnet34":
+                self.backbone = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1 if pretrained else None)
+            elif backbone_name == "resnet50":
+                self.backbone = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1 if pretrained else None)
+            else:
+                raise ValueError(f"Unsupported backbone: {backbone_name}")
+            
+            in_features = self.backbone.fc.in_features
+            
+            if conv1_channels == 1 or grayscale:
+                self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=conv1_kernel_size, stride=2, padding=conv1_kernel_size//2, bias=False)
+                if pretrained:
+                    self.backbone.conv1.weight.data = self.backbone.conv1.weight.data.mean(dim=1, keepdim=True)
+            else:
+                self.backbone.conv1 = nn.Conv2d(3, 64, kernel_size=conv1_kernel_size, stride=2, padding=conv1_kernel_size//2, bias=False)
+            
+            if freeze_backbone:
+                for name, param in self.backbone.named_parameters():
+                    if "fc" not in name:
+                        param.requires_grad = False
         
-        in_features = self.backbone.fc.in_features
-        
-        if conv1_channels == 1 or grayscale:
-            self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=conv1_kernel_size, stride=2, padding=conv1_kernel_size//2, bias=False)
-            if pretrained:
-                self.backbone.conv1.weight.data = self.backbone.conv1.weight.data.mean(dim=1, keepdim=True)
-        else:
-            self.backbone.conv1 = nn.Conv2d(3, 64, kernel_size=conv1_kernel_size, stride=2, padding=conv1_kernel_size//2, bias=False)
-        
-        self.backbone.fc = nn.Linear(in_features, num_classes)
+        self.classifier = nn.Linear(in_features, num_classes)
     
     def forward(self, x):
-        return self.backbone(x)
+        if self.model_type == "clip":
+            outputs = self.backbone.vision_model(pixel_values=x)
+            features = outputs.last_hidden_state[:, 0, :]
+        elif self.model_type == "timm":
+            features = self.backbone.forward_features(x)
+            if len(features.shape) == 3:
+                features = features[:, 0, :]
+        else:
+            features = self.backbone(x)
+            if len(features.shape) == 4:
+                features = nn.functional.adaptive_avg_pool2d(features, 1).flatten(1)
+        
+        return self.classifier(features)
 
 
 def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False, grayscale=False, convert_grayscale_to_rgb=False):
@@ -208,6 +258,33 @@ def get_dataset(dataset, root, val_split_ratio=0.0, use_test_as_val=False, grays
         if use_test_as_val:
             val_data = test_data
             test_data = None
+    elif dataset == "rafdb":
+        dataset_mean = [0.485, 0.456, 0.406]
+        dataset_std = [0.229, 0.224, 0.225]
+        normalize = transforms.Normalize(mean=dataset_mean, std=dataset_std)
+        
+        img_size = 224
+        train_transform = transforms.Compose([
+            transforms.Resize((img_size, img_size)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        test_transform = transforms.Compose([
+            transforms.Resize((img_size, img_size)),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        
+        train_data = datasets.ImageFolder(os.path.join(root, "train"), transform=train_transform)
+        val_data = None
+        if os.path.exists(os.path.join(root, "val")):
+            val_data = datasets.ImageFolder(os.path.join(root, "val"), transform=test_transform)
+        else:
+            print(f"[WARNING] No val folder found, using test set as validation")
+            val_data = datasets.ImageFolder(os.path.join(root, "test"), transform=test_transform)
+        test_data = datasets.ImageFolder(os.path.join(root, "test"), transform=test_transform)
+        class_labels = train_data.classes
     else:
         raise NotImplementedError(f"Dataset {dataset} not supported")
 
@@ -264,7 +341,7 @@ if __name__ == "__main__":
     if args.convert_grayscale_to_rgb:
         args.conv1_channels = 3
     
-    model = FinetuneModel(args.backbone, num_classes, pretrained=args.pretrained, grayscale=args.grayscale, conv1_channels=args.conv1_channels, conv1_kernel_size=args.conv1_kernel_size).to(device)
+    model = FinetuneModel(args.backbone, num_classes, pretrained=args.pretrained, grayscale=args.grayscale, conv1_channels=args.conv1_channels, conv1_kernel_size=args.conv1_kernel_size, model_type=args.model_type, freeze_backbone=args.freeze_backbone, clip_model_name=args.clip_model_name).to(device)
 
     print(f"Total params: {sum(p.numel() for p in model.parameters())}")
 

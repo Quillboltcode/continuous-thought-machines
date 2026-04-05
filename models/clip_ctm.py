@@ -24,8 +24,8 @@ class CLIPBackboneAdapter(nn.Module):
     def __init__(self, clip_model, reduction=4, alpha_init=0.5):
         super().__init__()
         self.clip_visual = clip_model.visual
-        d_raw = self.clip_visual.transformer.width  # raw transformer output dim
-        d_proj = self.clip_visual.output_dim  # projected dim
+        d_raw = self.clip_visual.transformer.width  # raw transformer output dim (768 for ViT-B-32)
+        d_proj = self.clip_visual.output_dim  # projected dim (512)
         
         for param in self.clip_visual.parameters():
             param.requires_grad = False
@@ -36,9 +36,13 @@ class CLIPBackboneAdapter(nn.Module):
             nn.Linear(d_raw // reduction, d_raw, bias=False),
             nn.ReLU()
         )
+        
+        # Project from raw transformer width to projected dim
+        self.proj = nn.Linear(d_raw, d_proj, bias=False)
+        
         self.alpha_raw = nn.Parameter(torch.tensor(alpha_init))
         
-        self.output_dim = d_raw
+        self.output_dim = d_proj
         self.register_buffer('mean', torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1))
         self.register_buffer('std', torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1))
     
@@ -82,6 +86,7 @@ class CLIPBackboneAdapter(nn.Module):
             tokens = self._extract_patch_tokens(x)
         
         adapted = self.alpha * self.adapter(tokens) + (1 - self.alpha) * tokens
+        adapted = self.proj(adapted)
         return adapted
 
 
@@ -145,7 +150,7 @@ class CLIPCTM(ContinuousThoughtMachine):
             param.requires_grad = False
         
         self.n_patches = self._get_n_patches()
-        self.clip_dim = self.clip_model.visual.transformer.width  # raw transformer width
+        self.clip_dim = self.backbone_adapter.output_dim  # projected dim
         
         self.backbone_adapter = CLIPBackboneAdapter(
             self.clip_model, 
@@ -209,6 +214,7 @@ class CLIPCTM(ContinuousThoughtMachine):
         
         self.register_buffer('text_prototypes', text_prototypes)
         
+        # Get text features (projected dim = 512)
         tokens = self.tokenizer(text_tokens_list).to(next(self.parameters()).device)
         with torch.no_grad():
             all_text_embeds = self.clip_model.encode_text(tokens)
