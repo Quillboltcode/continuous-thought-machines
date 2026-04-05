@@ -23,22 +23,38 @@ class CLIPBackboneAdapter(nn.Module):
     """
     def __init__(self, clip_model, reduction=4, alpha_init=0.5):
         super().__init__()
+        self.clip_model = clip_model
         self.clip_visual = clip_model.visual
-        d_raw = self.clip_visual.transformer.width  # raw transformer output dim (768 for ViT-B-32)
-        d_proj = self.clip_visual.output_dim  # projected dim (512)
+        self.clip_text = clip_model.transformer
+        
+        d_visual = self.clip_visual.transformer.width  # 768
+        d_text = self.clip_text.width  # 512
+        d_proj = self.clip_visual.output_dim  # 512
         
         for param in self.clip_visual.parameters():
             param.requires_grad = False
+        for param in self.clip_text.parameters():
+            param.requires_grad = False
         
-        self.adapter = nn.Sequential(
-            nn.Linear(d_raw, d_raw // reduction, bias=False),
+        # Visual adapter
+        self.adapter_visual = nn.Sequential(
+            nn.Linear(d_visual, d_visual // reduction, bias=False),
             nn.ReLU(),
-            nn.Linear(d_raw // reduction, d_raw, bias=False),
+            nn.Linear(d_visual // reduction, d_visual, bias=False),
             nn.ReLU()
         )
         
-        # Project from raw transformer width to projected dim
-        self.proj = nn.Linear(d_raw, d_proj, bias=False)
+        # Text adapter (uses text transformer width)
+        self.adapter_text = nn.Sequential(
+            nn.Linear(d_text, d_text // reduction, bias=False),
+            nn.ReLU(),
+            nn.Linear(d_text // reduction, d_text, bias=False),
+            nn.ReLU()
+        )
+        
+        # Project to common dim
+        self.proj_visual = nn.Linear(d_visual, d_proj, bias=False)
+        self.proj_text = nn.Linear(d_text, d_proj, bias=False)
         
         self.alpha_raw = nn.Parameter(torch.tensor(alpha_init))
         
@@ -82,14 +98,42 @@ class CLIPBackboneAdapter(nn.Module):
         
         return patch_tokens_out
     
-    def forward(self, x):
-        with torch.no_grad():
-            tokens = self._extract_patch_tokens(x)
+    def _extract_text_tokens(self, tokens):
+        """Extract CLS token from frozen CLIP text encoder."""
+        B = tokens.shape[0]
         
-        adapted = self.alpha * self.adapter(tokens) + (1 - self.alpha) * tokens
-        # Project from raw transformer width (768) to projected dim (512)
-        adapted = self.proj(adapted)
-        return adapted
+        x = self.clip_model.token_embedding(tokens).float()
+        x = x + self.clip_model.positional_embedding[:tokens.shape[1]]
+        x = x.permute(1, 0, 2)
+        x = self.clip_text(x)
+        x = x.permute(1, 0, 2)
+        x = self.clip_model.ln_final(x)
+        cls_token = x[:, 0, :]
+        
+        return cls_token
+    
+    def forward(self, x, text_tokens=None):
+        """Forward pass for visual features, or both visual and text if text_tokens provided."""
+        if text_tokens is None:
+            # Visual only
+            with torch.no_grad():
+                tokens = self._extract_patch_tokens(x)
+            adapted = self.alpha * self.adapter_visual(tokens) + (1 - self.alpha) * tokens
+            adapted = self.proj_visual(adapted)
+            return adapted
+        else:
+            # Both visual and text
+            with torch.no_grad():
+                visual_tokens = self._extract_patch_tokens(x)
+                text_raw = self._extract_text_tokens(text_tokens)
+            
+            visual_adapted = self.alpha * self.adapter_visual(visual_tokens) + (1 - self.alpha) * visual_tokens
+            visual_adapted = self.proj_visual(visual_adapted)
+            
+            text_adapted = self.alpha * self.adapter_text(text_raw.unsqueeze(1)) + (1 - self.alpha) * text_raw.unsqueeze(1)
+            text_adapted = self.proj_text(text_adapted).squeeze(1)
+            
+            return visual_adapted, text_adapted
 
 
 class CLIPAdapterBaseline(nn.Module):
@@ -139,14 +183,15 @@ class CLIPAdapterBaseline(nn.Module):
         for param in self.clip_model.parameters():
             param.requires_grad = False
         
-        self.clip_dim = self.clip_model.visual.transformer.width  # raw transformer width
-        
         self.backbone_adapter = CLIPBackboneAdapter(
             self.clip_model, 
             reduction=adapter_reduction, 
             alpha_init=alpha_init
         )
         
+        self.clip_dim = self.backbone_adapter.output_dim  # projected dim (512)
+        
+        self.tokenizer = open_clip.get_tokenizer(self.clip_model_name)
         self.text_tokens = None
         if use_text_prompts and text_prompts is not None:
             self._setup_text_prompts(text_prompts)
@@ -162,18 +207,21 @@ class CLIPAdapterBaseline(nn.Module):
         if not classes:
             return
         
-        tokenizer = open_clip.get_tokenizer(self.clip_model_name)
-        
         text_tokens_list = []
         for cls in classes:
             for template in templates:
                 text_tokens_list.append(template.format(cls))
         
-        tokens = tokenizer(text_tokens_list).to(next(self.parameters()).device)
-        with torch.no_grad():
-            all_embeds = self.clip_model.encode_text(tokens)
+        tokens = self.tokenizer(text_tokens_list).to(next(self.parameters()).device)
         
-        all_embeds = all_embeds.reshape(len(classes), len(templates), -1)
+        # Get adapted text features through adapter
+        visual_adapted, text_adapted = self.backbone_adapter(
+            torch.zeros(1, 3, 224, 224).to(next(self.parameters()).device), 
+            text_tokens=tokens
+        )
+        
+        # Store adapted text features per class
+        all_embeds = text_adapted.reshape(len(classes), len(templates), -1)
         self.text_tokens = all_embeds.mean(dim=1)
     
     def forward(self, x, return_features=False, return_text_features=False):
