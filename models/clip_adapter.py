@@ -212,24 +212,27 @@ class CLIPAdapterBaseline(nn.Module):
                 text_tokens_list.append(template.format(cls))
         
         tokens = self.tokenizer(text_tokens_list).to(next(self.parameters()).device)
+        with torch.no_grad():
+            all_embeds = self.clip_model.encode_text(tokens)
         
-        # Get adapted text features through adapter
-        visual_adapted, text_adapted = self.backbone_adapter(
-            torch.zeros(1, 3, 224, 224).to(next(self.parameters()).device), 
-            text_tokens=tokens
-        )
-        
-        # Store adapted text features per class (clone to detach from graph)
-        all_embeds = text_adapted.reshape(len(classes), len(templates), -1).detach()
-        self.register_buffer('text_tokens', all_embeds.mean(dim=1))
+        # Store raw text features (not adapted) - allow gradients to flow to visual adapter
+        all_embeds = all_embeds.reshape(len(classes), len(templates), -1)
+        self._raw_text_tokens = all_embeds.mean(dim=1)  # (num_classes, 512)
     
     def forward(self, x, return_features=False, return_text_features=False):
         visual_features = self.backbone_adapter(x)
         pooled = visual_features.mean(dim=1)
         pooled = F.normalize(pooled, dim=-1)
         
-        if self.use_text_prompts and self.text_tokens is not None:
-            text_features = F.normalize(self.text_tokens.to(pooled.device), dim=-1)
+        if self.use_text_prompts and hasattr(self, '_raw_text_tokens') and self._raw_text_tokens is not None:
+            # Use raw CLIP text features (will get gradients through visual adapter)
+            text_features_raw = self._raw_text_tokens.to(pooled.device)
+            
+            # Project text features to same dimension as visual features
+            if text_features_raw.shape[-1] != pooled.shape[-1]:
+                text_features_raw = self.backbone_adapter.proj_text(text_features_raw)
+            
+            text_features = F.normalize(text_features_raw, dim=-1)
             if return_text_features:
                 return pooled, text_features
             logits = pooled @ text_features.T * self.clip_model.logit_scale.exp()
