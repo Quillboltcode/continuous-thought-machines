@@ -222,23 +222,26 @@ class CLIPAdapterBaseline(nn.Module):
     def forward(self, x, return_features=False, return_text_features=False):
         visual_features = self.backbone_adapter(x)
         pooled = visual_features.mean(dim=1)
-        pooled = F.normalize(pooled, dim=-1)
         
         if self.use_text_prompts and hasattr(self, '_raw_text_tokens') and self._raw_text_tokens is not None:
-            # Use raw CLIP text features (will get gradients through visual adapter)
+            # Use raw CLIP text features
             text_features_raw = self._raw_text_tokens.to(pooled.device)
             
             # Project text features to same dimension as visual features
             if text_features_raw.shape[-1] != pooled.shape[-1]:
                 text_features_raw = self.backbone_adapter.proj_text(text_features_raw)
             
+            # Normalize BOTH before similarity (like trung_adapter)
+            pooled = F.normalize(pooled, dim=-1)
             text_features = F.normalize(text_features_raw, dim=-1)
+            
             if return_text_features:
                 return pooled, text_features
             logits = pooled @ text_features.T * self.clip_model.logit_scale.exp()
         else:
             if return_text_features:
                 raise ValueError("return_text_features=True but text prompts not enabled")
+            pooled = F.normalize(pooled, dim=-1)
             logits = self.classifier(pooled)
         
         if return_features:
