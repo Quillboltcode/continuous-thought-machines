@@ -21,7 +21,7 @@ class CLIPBackboneAdapter(nn.Module):
         reduction: Bottleneck reduction ratio (default: 4)
         alpha_init: Initial value for alpha blend parameter (default: 0.5)
     """
-    def __init__(self, clip_model, reduction=4, alpha_init=0.5):
+    def __init__(self, clip_model, reduction=4, alpha_init=0.2):
         super().__init__()
         self.clip_model = clip_model
         self.clip_visual = clip_model.visual
@@ -35,20 +35,18 @@ class CLIPBackboneAdapter(nn.Module):
         for param in self.clip_text.parameters():
             param.requires_grad = False
         
-        # Visual adapter (operates on projected CLS like trung_adapter)
+        # Visual adapter - NO final ReLU (allows negative values in adaptation)
         self.adapter_visual = nn.Sequential(
             nn.Linear(d_visual, d_visual // reduction, bias=False),
             nn.ReLU(),
-            nn.Linear(d_visual // reduction, d_visual, bias=False),
-            nn.ReLU()
+            nn.Linear(d_visual // reduction, d_visual, bias=False)
         )
         
-        # Text adapter (uses text transformer width)
+        # Text adapter - NO final ReLU
         self.adapter_text = nn.Sequential(
             nn.Linear(d_text, d_text // reduction, bias=False),
             nn.ReLU(),
-            nn.Linear(d_text // reduction, d_text, bias=False),
-            nn.ReLU()
+            nn.Linear(d_text // reduction, d_text, bias=False)
         )
         
         self.alpha_raw = nn.Parameter(torch.tensor(alpha_init))
@@ -106,7 +104,13 @@ class CLIPBackboneAdapter(nn.Module):
             # Visual only - CLS token
             with torch.no_grad():
                 tokens = self._extract_patch_tokens(x)  # (B, 1, 512)
-            adapted = self.alpha * self.adapter_visual(tokens) + (1 - self.alpha) * tokens
+            
+            # Normalize before adapter (like trung_adapter)
+            tokens_norm = F.normalize(tokens, dim=-1)
+            adapted = self.alpha * self.adapter_visual(tokens_norm) + (1 - self.alpha) * tokens_norm
+            
+            # Re-normalize after blending
+            adapted = F.normalize(adapted, dim=-1)
             return adapted.squeeze(1)  # (B, 512)
         else:
             # Both visual and text
@@ -114,9 +118,15 @@ class CLIPBackboneAdapter(nn.Module):
                 visual_tokens = self._extract_patch_tokens(x)
                 text_raw = self._extract_text_tokens(text_tokens)
             
-            visual_adapted = self.alpha * self.adapter_visual(visual_tokens) + (1 - self.alpha) * visual_tokens
+            # Normalize visual before adapter
+            visual_norm = F.normalize(visual_tokens, dim=-1)
+            visual_adapted = self.alpha * self.adapter_visual(visual_norm) + (1 - self.alpha) * visual_norm
+            visual_adapted = F.normalize(visual_adapted, dim=-1)
             
-            text_adapted = self.alpha * self.adapter_text(text_raw.unsqueeze(1)) + (1 - self.alpha) * text_raw.unsqueeze(1)
+            # Normalize text before adapter
+            text_norm = F.normalize(text_raw.unsqueeze(1), dim=-1)
+            text_adapted = self.alpha * self.adapter_text(text_norm) + (1 - self.alpha) * text_norm
+            text_adapted = F.normalize(text_adapted, dim=-1)
             
             return visual_adapted.squeeze(1), text_adapted.squeeze(1)
 
@@ -148,7 +158,7 @@ class CLIPAdapterBaseline(nn.Module):
                  clip_model_name="ViT-B-32",
                  pretrained="laion2b_s34b_b79k",
                  adapter_reduction=4,
-                 alpha_init=0.5,
+                 alpha_init=0.2,
                  num_classes=7,
                  use_text_prompts=False,
                  text_prompts=None):
