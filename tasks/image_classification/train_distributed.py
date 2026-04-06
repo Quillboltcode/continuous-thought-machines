@@ -726,7 +726,16 @@ if __name__=='__main__':
         # Checkpointing
         if bi % args.save_every == 0 and bi != start_iter and is_main_process(rank):
             save_path = f'{args.log_dir}/checkpoint.pt'
-            model_state_to_save = model.module.state_dict() if isinstance(model, DDP) else model.state_dict()
+            
+            if args.model == 'clip_adapter':
+                # Only save adapter weights (CLIP is frozen)
+                model_state_to_save = {
+                    'backbone_adapter': (model.module if world_size > 1 else model).backbone_adapter.state_dict(),
+                    'classifier': (model.module if world_size > 1 else model).classifier.state_dict(),
+                }
+            else:
+                model_state_to_save = model.module.state_dict() if isinstance(model, DDP) else model.state_dict()
+            
             save_dict = {
                 'model_state_dict': model_state_to_save,
                 'optimizer_state_dict': optimizer.state_dict(),
