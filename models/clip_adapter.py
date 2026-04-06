@@ -27,16 +27,15 @@ class CLIPBackboneAdapter(nn.Module):
         self.clip_visual = clip_model.visual
         self.clip_text = clip_model.transformer
         
-        d_visual = self.clip_visual.transformer.width  # 768
+        d_visual = self.clip_visual.output_dim  # 512 (projected CLS dim)
         d_text = self.clip_text.width  # 512
-        d_proj = self.clip_visual.output_dim  # 512
         
         for param in self.clip_visual.parameters():
             param.requires_grad = False
         for param in self.clip_text.parameters():
             param.requires_grad = False
         
-        # Visual adapter
+        # Visual adapter (operates on projected CLS like trung_adapter)
         self.adapter_visual = nn.Sequential(
             nn.Linear(d_visual, d_visual // reduction, bias=False),
             nn.ReLU(),
@@ -52,13 +51,9 @@ class CLIPBackboneAdapter(nn.Module):
             nn.ReLU()
         )
         
-        # Project to common dim
-        self.proj_visual = nn.Linear(d_visual, d_proj, bias=False)
-        self.proj_text = nn.Linear(d_text, d_proj, bias=False)
-        
         self.alpha_raw = nn.Parameter(torch.tensor(alpha_init))
         
-        self.output_dim = d_proj
+        self.output_dim = d_visual
         self.register_buffer('mean', torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1))
         self.register_buffer('std', torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1))
     
@@ -67,10 +62,7 @@ class CLIPBackboneAdapter(nn.Module):
         return torch.sigmoid(self.alpha_raw)
     
     def _extract_patch_tokens(self, x):
-        """Extract patch tokens from frozen CLIP visual encoder.
-        
-        Follows OpenCLIP's standard forward: ln_post only on CLS token, then project only CLS.
-        """
+        """Extract CLS token from frozen CLIP visual encoder."""
         B = x.shape[0]
         
         mean = self.mean.to(x.device)
@@ -88,15 +80,11 @@ class CLIPBackboneAdapter(nn.Module):
         tokens = self.clip_visual.ln_pre(tokens)
         tokens = self.clip_visual.transformer(tokens)
         
-        # OpenCLIP standard: ln_post and projection applied only to CLS token
+        # Use CLS token (like trung_adapter - already projected)
         cls_token_out = self.clip_visual.ln_post(tokens[:, 0, :])
         cls_token_out = cls_token_out @ self.clip_visual.proj
         
-        # For patch tokens, use the raw transformer output (no ln_post, no projection)
-        # This matches how OpenCLIP was trained - patch features are used directly
-        patch_tokens_out = tokens[:, 1:, :]
-        
-        return patch_tokens_out
+        return cls_token_out.unsqueeze(1)  # (B, 1, 512)
     
     def _extract_text_tokens(self, tokens):
         """Extract CLS token from frozen CLIP text encoder."""
@@ -115,12 +103,11 @@ class CLIPBackboneAdapter(nn.Module):
     def forward(self, x, text_tokens=None):
         """Forward pass for visual features, or both visual and text if text_tokens provided."""
         if text_tokens is None:
-            # Visual only
+            # Visual only - CLS token
             with torch.no_grad():
-                tokens = self._extract_patch_tokens(x)
+                tokens = self._extract_patch_tokens(x)  # (B, 1, 512)
             adapted = self.alpha * self.adapter_visual(tokens) + (1 - self.alpha) * tokens
-            adapted = self.proj_visual(adapted)
-            return adapted
+            return adapted.squeeze(1)  # (B, 512)
         else:
             # Both visual and text
             with torch.no_grad():
@@ -128,12 +115,10 @@ class CLIPBackboneAdapter(nn.Module):
                 text_raw = self._extract_text_tokens(text_tokens)
             
             visual_adapted = self.alpha * self.adapter_visual(visual_tokens) + (1 - self.alpha) * visual_tokens
-            visual_adapted = self.proj_visual(visual_adapted)
             
             text_adapted = self.alpha * self.adapter_text(text_raw.unsqueeze(1)) + (1 - self.alpha) * text_raw.unsqueeze(1)
-            text_adapted = self.proj_text(text_adapted).squeeze(1)
             
-            return visual_adapted, text_adapted
+            return visual_adapted.squeeze(1), text_adapted.squeeze(1)
 
 
 class CLIPAdapterBaseline(nn.Module):
@@ -220,19 +205,15 @@ class CLIPAdapterBaseline(nn.Module):
         self._raw_text_tokens = all_embeds.mean(dim=1)  # (num_classes, 512)
     
     def forward(self, x, return_features=False, return_text_features=False):
-        visual_features = self.backbone_adapter(x)
-        pooled = visual_features.mean(dim=1)
+        # Get CLS feature (already single token, no pooling needed)
+        visual_features = self.backbone_adapter(x)  # (B, 512)
         
         if self.use_text_prompts and hasattr(self, '_raw_text_tokens') and self._raw_text_tokens is not None:
             # Use raw CLIP text features
-            text_features_raw = self._raw_text_tokens.to(pooled.device)
-            
-            # Project text features to same dimension as visual features
-            if text_features_raw.shape[-1] != pooled.shape[-1]:
-                text_features_raw = self.backbone_adapter.proj_text(text_features_raw)
+            text_features_raw = self._raw_text_tokens.to(visual_features.device)
             
             # Normalize BOTH before similarity (like trung_adapter)
-            pooled = F.normalize(pooled, dim=-1)
+            pooled = F.normalize(visual_features, dim=-1)
             text_features = F.normalize(text_features_raw, dim=-1)
             
             if return_text_features:
@@ -241,7 +222,7 @@ class CLIPAdapterBaseline(nn.Module):
         else:
             if return_text_features:
                 raise ValueError("return_text_features=True but text prompts not enabled")
-            pooled = F.normalize(pooled, dim=-1)
+            pooled = F.normalize(visual_features, dim=-1)
             logits = self.classifier(pooled)
         
         if return_features:
