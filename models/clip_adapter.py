@@ -189,10 +189,6 @@ class CLIPAdapterBaseline(nn.Module):
         self.tokenizer = open_clip.get_tokenizer(self.clip_model_name)
         if use_text_prompts and text_prompts is not None:
             self._setup_text_prompts(text_prompts)
-        
-        self.classifier = nn.Linear(self.clip_dim, num_classes)
-        nn.init.xavier_uniform_(self.classifier.weight)
-        nn.init.zeros_(self.classifier.bias)
     
     def _setup_text_prompts(self, text_prompts):
         templates = text_prompts.get('templates', ["a photo of a {}"])
@@ -212,17 +208,21 @@ class CLIPAdapterBaseline(nn.Module):
         
         # Store raw text features (not adapted) - allow gradients to flow to visual adapter
         all_embeds = all_embeds.reshape(len(classes), len(templates), -1)
-        self._raw_text_tokens = all_embeds.mean(dim=1)  # (num_classes, 512)
+        self._raw_text_tokens = all_embeds.mean(dim=1)
+    
+    def configure_optimizers(self, lr=1e-3, weight_decay=0.0):
+        return [
+            {'params': self.backbone_adapter.adapter_visual.parameters(), 'lr': lr, 'weight_decay': weight_decay},
+            {'params': self.backbone_adapter.adapter_text.parameters(), 'lr': lr, 'weight_decay': weight_decay},
+            {'params': [self.backbone_adapter.alpha_raw], 'lr': lr, 'weight_decay': weight_decay},
+        ]
     
     def forward(self, x, return_features=False, return_text_features=False):
-        # Get CLS feature (already single token, no pooling needed)
-        visual_features = self.backbone_adapter(x)  # (B, 512)
+        visual_features = self.backbone_adapter(x)
         
         if self.use_text_prompts and hasattr(self, '_raw_text_tokens') and self._raw_text_tokens is not None:
-            # Use raw CLIP text features
             text_features_raw = self._raw_text_tokens.to(visual_features.device)
             
-            # Normalize BOTH before similarity (like trung_adapter)
             pooled = F.normalize(visual_features, dim=-1)
             text_features = F.normalize(text_features_raw, dim=-1)
             
@@ -230,10 +230,7 @@ class CLIPAdapterBaseline(nn.Module):
                 return pooled, text_features
             logits = pooled @ text_features.T * self.clip_model.logit_scale.exp()
         else:
-            if return_text_features:
-                raise ValueError("return_text_features=True but text prompts not enabled")
-            pooled = F.normalize(visual_features, dim=-1)
-            logits = self.classifier(pooled)
+            raise ValueError("Text prompts not set up. Set use_text_prompts=True and provide text_prompts.")
         
         if return_features:
             return pooled, logits
