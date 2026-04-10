@@ -591,7 +591,7 @@ def main():
             project=args.wandb_project,
             entity=args.wandb_entity,
             dir=args.log_dir,
-            config=OmegaConf.to_container(cfg, resolve=True),
+            config=vars(args),
             name=run_name,
             reinit=True,
         )
