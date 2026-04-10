@@ -133,7 +133,7 @@ def parse_args():
         "--model",
         type=str,
         default="ctm",
-        choices=["ctm", "ctm_gated", "ctm_with_innovations", "lstm", "ff"],
+        choices=["ctm", "ctm_gated", "ctm_with_innovations", "lstm", "ff", "clip_adapter"],
         help="Model type to train.",
     )
 
@@ -366,6 +366,37 @@ def parse_args():
         type=float,
         default=0.1,
         help="Weight for CTCS (CTM-Innovations only).",
+    )
+    # CLIP-Adapter specific
+    parser.add_argument(
+        "--clip_model_name",
+        type=str,
+        default="ViT-B-32",
+        help="CLIP model name (CLIP-Adapter only).",
+    )
+    parser.add_argument(
+        "--clip_pretrained",
+        type=str,
+        default="laion2b_s34b_b79k",
+        help="CLIP pretrained weights (CLIP-Adapter only).",
+    )
+    parser.add_argument(
+        "--adapter_reduction",
+        type=int,
+        default=4,
+        help="Adapter bottleneck reduction (CLIP-Adapter only).",
+    )
+    parser.add_argument(
+        "--alpha_init",
+        type=float,
+        default=0.5,
+        help="Initial alpha for adapter blend (CLIP-Adapter only).",
+    )
+    parser.add_argument(
+        "--use_text_prompts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use text prompts for CLIP-Adapter (CLIP-Adapter only).",
     )
 
     # Training
@@ -1054,6 +1085,12 @@ def main(cfg: DictConfig):
                     accuracy = (predictions.argmax(1) == targets).float().mean().item()
                     pbar_desc = f"FF Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}"
 
+                elif args.model == "clip_adapter":
+                    logits = model(inputs)
+                    loss = nn.CrossEntropyLoss()(logits, targets)
+                    accuracy = (logits.argmax(1) == targets).float().mean().item()
+                    pbar_desc = f"CLIP-Adapter Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}"
+
             scaler.scale(loss).backward()
 
             if args.gradient_clipping != -1:
@@ -1272,6 +1309,13 @@ def main(cfg: DictConfig):
                                 loss = nn.CrossEntropyLoss()(these_predictions, targets)
                                 all_predictions_list.append(
                                     these_predictions.argmax(1).detach().cpu().numpy()
+                                )  # Shape (B,)
+
+                            elif args.model == "clip_adapter":
+                                logits = model(inputs)
+                                loss = nn.CrossEntropyLoss()(logits, targets)
+                                all_predictions_list.append(
+                                    logits.argmax(1).detach().cpu().numpy()
                                 )  # Shape (B,)
 
                             all_losses.append(loss.item())
@@ -1530,6 +1574,13 @@ def main(cfg: DictConfig):
                                     loss = nn.CrossEntropyLoss()(these_predictions, targets)
                                     all_predictions_list.append(
                                         these_predictions.argmax(1).detach().cpu().numpy()
+                                    )
+
+                                elif args.model == "clip_adapter":
+                                    logits = model(inputs)
+                                    loss = nn.CrossEntropyLoss()(logits, targets)
+                                    all_predictions_list.append(
+                                        logits.argmax(1).detach().cpu().numpy()
                                     )
     
                                 all_losses.append(loss.item())
