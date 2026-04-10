@@ -437,6 +437,18 @@ def parse_args():
         "--log_dir", type=str, default="logs/scratch", help="Directory for logging."
     )
     parser.add_argument(
+        "--use_wandb",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use wandb for logging.",
+    )
+    parser.add_argument(
+        "--wandb_project", type=str, default="ctm", help=" wandb project name."
+    )
+    parser.add_argument(
+        "--wandb_entity", type=str, default=None, help="wandb entity team."
+    )
+    parser.add_argument(
         "--dataset", type=str, default="cifar10", help="Dataset to use."
     )
     parser.add_argument(
