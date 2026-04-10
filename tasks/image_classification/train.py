@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import random
+import sys
 import wandb
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,22 +12,26 @@ sns.set_style("darkgrid")
 import torch
 
 if torch.cuda.is_available():
-    # For faster
     torch.set_float32_matmul_precision("high")
 import torch.nn as nn
 from tqdm.auto import tqdm
-
-import hydra
-from omegaconf import DictConfig, OmegaConf
 
 from tasks.image_classification.plotting import (
     plot_neural_dynamics,
     make_classification_gif,
 )
 from utils.housekeeping import set_seed, zip_python_code
-from utils.dataset_utils import get_dataset, compute_dataset_stats, compute_class_distribution, log_class_histogram_wandb
+from utils.dataset_utils import (
+    get_dataset,
+    compute_dataset_stats,
+    compute_class_distribution,
+    log_class_histogram_wandb,
+)
 from models.factories import create_model
-from models.ctm_with_innovations import PredictiveSynchronyLoss, CrossTickContrastiveLoss
+from models.ctm_with_innovations import (
+    PredictiveSynchronyLoss,
+    CrossTickContrastiveLoss,
+)
 from models.utils import PonderNetLoss as PonderLoss
 from utils.losses import image_classification_loss
 from utils.schedulers import WarmupCosineAnnealingLR, WarmupMultiStepLR, warmup
@@ -67,62 +72,9 @@ warnings.filterwarnings(
 )
 
 
-def flatten_config(cfg: DictConfig, prefix: str = '') -> dict:
-    """Flatten nested config into flat dict with underscore-separated keys.
-    Special handling for keys that should not have their parent as prefix."""
-    result = {}
-    for key, value in cfg.items():
-        if isinstance(value, DictConfig):
-            # For certain keys, flatten directly without adding prefix
-            if prefix == '' and key in ['model', 'data', 'training', 'logging']:
-                result.update(flatten_config(value, ''))
-            # Handle wandb and reload specially - flatten their contents to top level
-            elif key in ['wandb', 'reload']:
-                result.update(flatten_config(value, ''))
-            else:
-                new_key = f"{prefix}_{key}" if prefix else key
-                result.update(flatten_config(value, new_key))
-        else:
-            new_key = f"{prefix}_{key}" if prefix else key
-            result[new_key] = value
-    
-    # Post-processing: rename nested model keys to match expected argument names
-    if prefix == '':
-        key_renames = {
-            'ponder_n_synch_out': 'n_synch_out',
-            'ponder_n_synch_action': 'n_synch_action',
-            'ponder_synapse_depth': 'synapse_depth',
-            'ponder_neuron_select_type': 'neuron_select_type',
-            'ponder_n_random_pairing_self': 'n_random_pairing_self',
-            'ponder_use_ponder_loss': 'use_ponder_loss',
-            'ponder_lambda_p': 'lambda_p',
-            'ponder_beta': 'beta',
-            'memory_memory_length': 'memory_length',
-            'memory_deep_memory': 'deep_memory',
-            'memory_memory_hidden_dims': 'memory_hidden_dims',
-            'memory_dropout_nlm': 'dropout_nlm',
-            'memory_do_normalisation': 'do_normalisation',
-            'gated_exit_strategy': 'exit_strategy',
-            'gated_exit_threshold': 'exit_threshold',
-            'gated_min_steps': 'min_steps',
-            'gated_loss_type': 'loss_type',
-            'innovations_use_gsh': 'use_gsh',
-            'innovations_use_hne': 'use_hne',
-            'innovations_use_sanp': 'use_sanp',
-            'innovations_hne_group_configs': 'hne_group_configs',
-            'innovations_hne_group_configs_file': 'hne_group_configs_file',
-            'innovations_sanp_init_top_k': 'sanp_init_top_k',
-            'losses_use_psl': 'use_psl',
-            'losses_lambda_psl': 'lambda_psl',
-            'losses_use_ctcs': 'use_ctcs',
-            'losses_lambda_ctcs': 'lambda_ctcs',
-            'exclusions_weight_decay_exclusion_list': 'weight_decay_exclusion_list',
-        }
-        for old_key, new_key in key_renames.items():
-            if old_key in result:
-                result[new_key] = result.pop(old_key)
-    
-    return result
+def flatten_config(cfg):
+    """Placeholder for backwards compatibility - now just returns cfg as dict."""
+    return cfg if cfg else {}
 
 
 def parse_args():
@@ -133,7 +85,14 @@ def parse_args():
         "--model",
         type=str,
         default="ctm",
-        choices=["ctm", "ctm_gated", "ctm_with_innovations", "lstm", "ff", "clip_adapter"],
+        choices=[
+            "ctm",
+            "ctm_gated",
+            "ctm_with_innovations",
+            "lstm",
+            "ff",
+            "clip_adapter",
+        ],
         help="Model type to train.",
     )
 
@@ -581,16 +540,19 @@ def parse_args():
     return args
 
 
-@hydra.main(config_path="config", config_name="config", version_base=None)
-def main(cfg: DictConfig):
-    args = flatten_config(cfg)
-    args = type('Args', (), args)()
-    
+def main():
+    args = parse_args()
+    args_dict = vars(args)
+    args = type("Args", (), args_dict)()
+
     # Parse hne_group_configs if provided
-    if hasattr(args, 'hne_group_configs') and args.hne_group_configs is not None:
+    if hasattr(args, "hne_group_configs") and args.hne_group_configs is not None:
         args.hne_group_configs = json.loads(args.hne_group_configs)
-    elif hasattr(args, 'hne_group_configs_file') and args.hne_group_configs_file is not None:
-        with open(args.hne_group_configs_file, 'r') as f:
+    elif (
+        hasattr(args, "hne_group_configs_file")
+        and args.hne_group_configs_file is not None
+    ):
+        with open(args.hne_group_configs_file, "r") as f:
             args.hne_group_configs = json.load(f)
     else:
         args.hne_group_configs = None
@@ -603,7 +565,7 @@ def main(cfg: DictConfig):
             run_name += f"-thr{args.exit_threshold}"
         elif args.exit_strategy in ("ponder", "normal", "learned"):
             run_name += f"_loss={args.loss_type}"
-    
+
     # Update log_dir to be unique based on run_name if it's the default or generic
     if "scratch" in args.log_dir or args.log_dir == "logs":
         args.log_dir = os.path.join("logs", run_name)
@@ -622,7 +584,7 @@ def main(cfg: DictConfig):
             reinit=True,
         )
         wandb.log({"Logging initialized": True})
-    
+
     assert args.dataset in [
         "cifar10",
         "cifar100",
@@ -646,7 +608,7 @@ def main(cfg: DictConfig):
             args.img_size,
         )
     )
-    
+
     # Log class distribution to wandb
     if args.log_dataset_distribution:
         train_class_dist = compute_class_distribution(train_data)
@@ -662,7 +624,9 @@ def main(cfg: DictConfig):
             log_class_histogram_wandb(test_class_dist, class_labels, split="test")
 
     first_sample, first_label = train_data[0]
-    print(f"[DEBUG] First sample shape: {first_sample.shape}, mean: {first_sample.mean().item():.4f}, label: {first_label}")
+    print(
+        f"[DEBUG] First sample shape: {first_sample.shape}, mean: {first_sample.mean().item():.4f}, label: {first_label}"
+    )
 
     num_workers_test = 1  # Defaulting to 1, change if needed
     trainloader = torch.utils.data.DataLoader(
@@ -701,7 +665,9 @@ def main(cfg: DictConfig):
         iterations_per_epoch = len(train_data) // args.batch_size
         args.track_every = iterations_per_epoch
         args.n_test_batches = -1
-        print(f"[INFO] Eval per epoch enabled: track_every={args.track_every} (iterations/epoch), n_test_batches={args.n_test_batches} (full validation)")
+        print(
+            f"[INFO] Eval per epoch enabled: track_every={args.track_every} (iterations/epoch), n_test_batches={args.n_test_batches} (full validation)"
+        )
 
     prediction_reshaper = [-1]  # Problem specific
     args.out_dims = len(class_labels)
@@ -753,12 +719,21 @@ def main(cfg: DictConfig):
         wandb.log({"Total Parameters": sum(p.numel() for p in model.parameters())})
 
     if args.compute_flops:
-        input_channels = 1 if args.grayscale and not args.convert_grayscale_to_rgb else 3
-        metrics = compute_model_metrics(model, args.model, args.dataset, input_channels=input_channels)
-        if metrics['total_flops'] > 0:
+        input_channels = (
+            1 if args.grayscale and not args.convert_grayscale_to_rgb else 3
+        )
+        metrics = compute_model_metrics(
+            model, args.model, args.dataset, input_channels=input_channels
+        )
+        if metrics["total_flops"] > 0:
             print(f"Total FLOPs: {metrics['total_flops']:,}")
             if args.use_wandb:
-                wandb.log({"Total FLOPs": metrics['total_flops'], "FLOPs Breakdown": metrics['flops_breakdown']})
+                wandb.log(
+                    {
+                        "Total FLOPs": metrics["total_flops"],
+                        "FLOPs Breakdown": metrics["flops_breakdown"],
+                    }
+                )
 
     decay_params = []
     no_decay_params = []
@@ -779,9 +754,13 @@ def main(cfg: DictConfig):
     # Collect additional params from auxiliary losses
     aux_params = []
     if psl_loss is not None:
-        aux_params.append({"params": psl_loss.parameters(), "weight_decay": args.weight_decay})
+        aux_params.append(
+            {"params": psl_loss.parameters(), "weight_decay": args.weight_decay}
+        )
     if ctcs_loss is not None:
-        aux_params.append({"params": ctcs_loss.parameters(), "weight_decay": args.weight_decay})
+        aux_params.append(
+            {"params": ctcs_loss.parameters(), "weight_decay": args.weight_decay}
+        )
 
     # Optimizer and scheduler (Common setup)
     if len(no_decay_names) and args.weight_decay != 0:
@@ -789,12 +768,15 @@ def main(cfg: DictConfig):
             [
                 {"params": decay_params, "weight_decay": args.weight_decay},
                 {"params": no_decay_params, "weight_decay": 0},
-            ] + aux_params,
+            ]
+            + aux_params,
             lr=args.lr,
             eps=1e-8 if not args.use_amp else 1e-6,
         )
     else:
-        param_groups = [{"params": model.parameters(), "weight_decay": args.weight_decay}] + aux_params
+        param_groups = [
+            {"params": model.parameters(), "weight_decay": args.weight_decay}
+        ] + aux_params
         optimizer = torch.optim.AdamW(
             param_groups,
             lr=args.lr,
@@ -832,8 +814,16 @@ def main(cfg: DictConfig):
     test_accuracies = []
     iters = []
     # Conditional metrics for CTM/LSTM/CTM-Gated
-    train_accuracies_most_certain = [] if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"] else None
-    test_accuracies_most_certain = [] if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"] else None
+    train_accuracies_most_certain = (
+        []
+        if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]
+        else None
+    )
+    test_accuracies_most_certain = (
+        []
+        if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]
+        else None
+    )
     # CTM-Gated specific: track exit steps and certainty
     train_exit_steps = [] if args.model == "ctm_gated" else None
     test_exit_steps = [] if args.model == "ctm_gated" else None
@@ -1002,7 +992,9 @@ def main(cfg: DictConfig):
                         pbar_desc = f"CTM Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Where_certain={where_most_certain.float().mean().item():0.2f}+-{where_most_certain.float().std().item():0.2f} ({where_most_certain.min().item():d}<->{where_most_certain.max().item():d})"
 
                 elif args.model == "ctm_with_innovations":
-                    predictions, certainties, synchronisation, synch_out_seq = model(inputs)
+                    predictions, certainties, synchronisation, synch_out_seq = model(
+                        inputs
+                    )
                     loss, where_most_certain = image_classification_loss(
                         predictions, certainties, targets, use_most_certain=True
                     )
@@ -1010,7 +1002,9 @@ def main(cfg: DictConfig):
                     if psl_loss is not None and synch_out_seq is not None:
                         aux_loss = aux_loss + args.lambda_psl * psl_loss(synch_out_seq)
                     if ctcs_loss is not None and synch_out_seq is not None:
-                        aux_loss = aux_loss + args.lambda_ctcs * ctcs_loss(synch_out_seq)
+                        aux_loss = aux_loss + args.lambda_ctcs * ctcs_loss(
+                            synch_out_seq
+                        )
                     loss = loss + aux_loss
                     accuracy = (
                         (
@@ -1029,7 +1023,9 @@ def main(cfg: DictConfig):
                     pbar_desc = f"CTM-Innovations Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Where_certain={where_most_certain.float().mean().item():0.2f}+-{where_most_certain.float().std().item():0.2f} ({where_most_certain.min().item():d}<->{where_most_certain.max().item():d})"
 
                 elif args.model == "ctm_gated":
-                    predictions, certainties, synchronisation, exit_steps, _ = model(inputs)
+                    predictions, certainties, synchronisation, exit_steps, _ = model(
+                        inputs
+                    )
                     loss, where_most_certain = ctm_gated_loss(
                         predictions, certainties, targets, exit_steps
                     )
@@ -1048,13 +1044,19 @@ def main(cfg: DictConfig):
                         .item()
                     )
                     avg_exit_step = exit_steps.float().mean().item()
-                    
+
                     # Compute certainty statistics
                     avg_certainty_per_step = certainties[:, 1, :].mean(dim=0)  # [T]
-                    certainty_at_exit = certainties[:, 1, :].gather(1, exit_steps.unsqueeze(1)).mean()
-                    min_certainty_at_exit = certainties[:, 1, :].gather(1, exit_steps.unsqueeze(1)).min()
-                    max_certainty_at_exit = certainties[:, 1, :].gather(1, exit_steps.unsqueeze(1)).max()
-                    
+                    certainty_at_exit = (
+                        certainties[:, 1, :].gather(1, exit_steps.unsqueeze(1)).mean()
+                    )
+                    min_certainty_at_exit = (
+                        certainties[:, 1, :].gather(1, exit_steps.unsqueeze(1)).min()
+                    )
+                    max_certainty_at_exit = (
+                        certainties[:, 1, :].gather(1, exit_steps.unsqueeze(1)).max()
+                    )
+
                     pbar_desc = f"CTM-Gated Loss={loss.item():0.3f}. Acc={accuracy:0.3f}. LR={current_lr:0.6f}. Exit_step={avg_exit_step:0.2f}. Cert_exit={certainty_at_exit.item():0.3f}"
 
                 elif args.model == "lstm":
@@ -1190,7 +1192,9 @@ def main(cfg: DictConfig):
                                         .cpu()
                                         .numpy()
                                     )  # Shape (B,)
-                                    all_where_most_certain_list.append(where_to_eval.detach().cpu().numpy())
+                                    all_where_most_certain_list.append(
+                                        where_to_eval.detach().cpu().numpy()
+                                    )
                                 else:
                                     loss, where_most_certain = (
                                         image_classification_loss(
@@ -1218,18 +1222,26 @@ def main(cfg: DictConfig):
                                         .cpu()
                                         .numpy()
                                     )  # Shape (B,)
-                                    all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+                                    all_where_most_certain_list.append(
+                                        where_most_certain.detach().cpu().numpy()
+                                    )
 
                             elif args.model == "ctm_gated":
-                                these_predictions, certainties, _, these_exit_steps, _ = model(inputs, use_early_exit=False)
+                                (
+                                    these_predictions,
+                                    certainties,
+                                    _,
+                                    these_exit_steps,
+                                    _,
+                                ) = model(inputs, use_early_exit=False)
                                 loss, where_most_certain = ctm_gated_loss(
-                                    these_predictions, certainties, targets, these_exit_steps
+                                    these_predictions,
+                                    certainties,
+                                    targets,
+                                    these_exit_steps,
                                 )
                                 all_predictions_list.append(
-                                    these_predictions.argmax(1)
-                                    .detach()
-                                    .cpu()
-                                    .numpy()
+                                    these_predictions.argmax(1).detach().cpu().numpy()
                                 )  # Shape (B, T)
                                 all_predictions_most_certain_list.append(
                                     these_predictions.argmax(1)[
@@ -1243,16 +1255,27 @@ def main(cfg: DictConfig):
                                     .cpu()
                                     .numpy()
                                 )
-                                all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+                                all_where_most_certain_list.append(
+                                    where_most_certain.detach().cpu().numpy()
+                                )
                                 if train_exit_steps is not None:
-                                    train_exit_steps.append(these_exit_steps.float().mean().item())
+                                    train_exit_steps.append(
+                                        these_exit_steps.float().mean().item()
+                                    )
                                 if train_certainty_at_exit is not None:
                                     # certainties shape: [B, 2, T] where [:, 1, :] is certainty
-                                    certainty_at_exit = certainties[:, 1, :].gather(1, these_exit_steps.unsqueeze(1)).mean().item()
+                                    certainty_at_exit = (
+                                        certainties[:, 1, :]
+                                        .gather(1, these_exit_steps.unsqueeze(1))
+                                        .mean()
+                                        .item()
+                                    )
                                     train_certainty_at_exit.append(certainty_at_exit)
                                 if train_certainty_per_step is not None:
                                     # Store average certainty per step
-                                    train_certainty_per_step.append(certainties[:, 1, :].mean(dim=0).cpu().numpy())
+                                    train_certainty_per_step.append(
+                                        certainties[:, 1, :].mean(dim=0).cpu().numpy()
+                                    )
 
                             elif args.model == "lstm":
                                 these_predictions, certainties, _ = model(inputs)
@@ -1277,7 +1300,9 @@ def main(cfg: DictConfig):
                                     .cpu()
                                     .numpy()
                                 )  # Shape (B,)
-                                all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+                                all_where_most_certain_list.append(
+                                    where_most_certain.detach().cpu().numpy()
+                                )
 
                             elif args.model == "ctm_with_innovations":
                                 these_predictions, certainties, _, _ = model(inputs)
@@ -1302,7 +1327,9 @@ def main(cfg: DictConfig):
                                     .cpu()
                                     .numpy()
                                 )  # Shape (B,)
-                                all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+                                all_where_most_certain_list.append(
+                                    where_most_certain.detach().cpu().numpy()
+                                )
 
                             elif args.model == "ff":
                                 these_predictions = model(inputs)
@@ -1336,7 +1363,12 @@ def main(cfg: DictConfig):
                     )  # Shape (N, T) or (N,)
                     train_losses.append(np.mean(all_losses))
 
-                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
+                    if args.model in [
+                        "ctm",
+                        "ctm_with_innovations",
+                        "lstm",
+                        "ctm_gated",
+                    ]:
                         # Accuracies per tick for CTM/LSTM
                         current_train_accuracies = np.mean(
                             all_predictions == all_targets[..., np.newaxis], axis=0
@@ -1363,33 +1395,68 @@ def main(cfg: DictConfig):
                         "Learning Rate": current_lr,
                     }
 
-                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
+                    if args.model in [
+                        "ctm",
+                        "ctm_with_innovations",
+                        "lstm",
+                        "ctm_gated",
+                    ]:
                         log_dict["Train Accuracy (Most Certain)"] = (
                             current_train_accuracies_most_certain
                         )
                         # Log where_most_certain statistics
                         if all_where_most_certain_list:
-                            all_where_most_certain = np.concatenate(all_where_most_certain_list)
-                            log_dict["Train Most Certain Tick (Mean)"] = all_where_most_certain.mean()
-                            log_dict["Train Most Certain Tick (Median)"] = np.median(all_where_most_certain)
-                            log_dict["Train Most Certain Tick (Min)"] = all_where_most_certain.min()
-                            log_dict["Train Most Certain Tick (Max)"] = all_where_most_certain.max()
-                            log_dict["Train Most Certain Tick (Std)"] = all_where_most_certain.std()
-                            log_dict["Train Most Certain Tick Distribution"] = wandb.Histogram(all_where_most_certain)
+                            all_where_most_certain = np.concatenate(
+                                all_where_most_certain_list
+                            )
+                            log_dict["Train Most Certain Tick (Mean)"] = (
+                                all_where_most_certain.mean()
+                            )
+                            log_dict["Train Most Certain Tick (Median)"] = np.median(
+                                all_where_most_certain
+                            )
+                            log_dict["Train Most Certain Tick (Min)"] = (
+                                all_where_most_certain.min()
+                            )
+                            log_dict["Train Most Certain Tick (Max)"] = (
+                                all_where_most_certain.max()
+                            )
+                            log_dict["Train Most Certain Tick (Std)"] = (
+                                all_where_most_certain.std()
+                            )
+                            log_dict["Train Most Certain Tick Distribution"] = (
+                                wandb.Histogram(all_where_most_certain)
+                            )
                         for i, acc in enumerate(current_train_accuracies):
                             log_dict[f"Train Accuracy (Tick {i})"] = acc
                         if args.model == "ctm_gated" and train_exit_steps:
                             log_dict["Train Avg Exit Steps"] = np.mean(train_exit_steps)
                             if train_certainty_at_exit:
-                                log_dict["Train Certainty at Exit"] = np.mean(train_certainty_at_exit)
+                                log_dict["Train Certainty at Exit"] = np.mean(
+                                    train_certainty_at_exit
+                                )
                             if train_certainty_per_step:
                                 # Log certainty at specific steps
-                                avg_certainty_per_step = np.mean(train_certainty_per_step, axis=0)
-                                log_dict["Train Certainty (Step 5)"] = avg_certainty_per_step[4] if len(avg_certainty_per_step) > 4 else 0
-                                log_dict["Train Certainty (Step 10)"] = avg_certainty_per_step[9] if len(avg_certainty_per_step) > 9 else 0
-                                log_dict["Train Certainty (Final)"] = avg_certainty_per_step[-1]
+                                avg_certainty_per_step = np.mean(
+                                    train_certainty_per_step, axis=0
+                                )
+                                log_dict["Train Certainty (Step 5)"] = (
+                                    avg_certainty_per_step[4]
+                                    if len(avg_certainty_per_step) > 4
+                                    else 0
+                                )
+                                log_dict["Train Certainty (Step 10)"] = (
+                                    avg_certainty_per_step[9]
+                                    if len(avg_certainty_per_step) > 9
+                                    else 0
+                                )
+                                log_dict["Train Certainty (Final)"] = (
+                                    avg_certainty_per_step[-1]
+                                )
                                 # Log full trajectory as histogram
-                                log_dict["Train Certainty Trajectory"] = wandb.Histogram(avg_certainty_per_step)
+                                log_dict["Train Certainty Trajectory"] = (
+                                    wandb.Histogram(avg_certainty_per_step)
+                                )
                     else:  # FF
                         log_dict["Train Accuracy"] = current_train_accuracies
 
@@ -1401,9 +1468,13 @@ def main(cfg: DictConfig):
                 model.eval()
                 with torch.inference_mode():  # Use inference_mode for test eval
                     if test_data is None:
-                        pbar.set_description("Tracking: No test data, skipping TEST metrics")
+                        pbar.set_description(
+                            "Tracking: No test data, skipping TEST metrics"
+                        )
                     else:
-                        pbar.set_description(f"Tracking: Computing TEST metrics (iter {bi})")
+                        pbar.set_description(
+                            f"Tracking: Computing TEST metrics (iter {bi})"
+                        )
                         loader = torch.utils.data.DataLoader(
                             test_data,
                             batch_size=args.batch_size_test,
@@ -1456,7 +1527,9 @@ def main(cfg: DictConfig):
                                             .cpu()
                                             .numpy()
                                         )
-                                        all_where_most_certain_list.append(where_to_eval.detach().cpu().numpy())
+                                        all_where_most_certain_list.append(
+                                            where_to_eval.detach().cpu().numpy()
+                                        )
                                     else:
                                         loss, where_most_certain = (
                                             image_classification_loss(
@@ -1484,13 +1557,24 @@ def main(cfg: DictConfig):
                                             .cpu()
                                             .numpy()
                                         )
-                                        all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+                                        all_where_most_certain_list.append(
+                                            where_most_certain.detach().cpu().numpy()
+                                        )
 
                                 elif args.model == "ctm_gated":
-                                    these_predictions, certainties, _, these_exit_steps, _ = model(inputs, use_early_exit=False)
+                                    (
+                                        these_predictions,
+                                        certainties,
+                                        _,
+                                        these_exit_steps,
+                                        _,
+                                    ) = model(inputs, use_early_exit=False)
 
                                     loss, where_most_certain = ctm_gated_loss(
-                                        these_predictions, certainties, targets, these_exit_steps
+                                        these_predictions,
+                                        certainties,
+                                        targets,
+                                        these_exit_steps,
                                     )
                                     all_predictions_list.append(
                                         these_predictions.argmax(1)
@@ -1510,25 +1594,44 @@ def main(cfg: DictConfig):
                                         .cpu()
                                         .numpy()
                                     )
-                                    all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+                                    all_where_most_certain_list.append(
+                                        where_most_certain.detach().cpu().numpy()
+                                    )
                                     if test_exit_steps is not None:
-                                        test_exit_steps.append(these_exit_steps.float().mean().item())
+                                        test_exit_steps.append(
+                                            these_exit_steps.float().mean().item()
+                                        )
                                     if test_certainty_at_exit is not None:
-                                        certainty_at_exit = certainties[:, 1, :].gather(1, these_exit_steps.unsqueeze(1)).mean().item()
+                                        certainty_at_exit = (
+                                            certainties[:, 1, :]
+                                            .gather(1, these_exit_steps.unsqueeze(1))
+                                            .mean()
+                                            .item()
+                                        )
                                         test_certainty_at_exit.append(certainty_at_exit)
                                     if test_certainty_per_step is not None:
-                                        test_certainty_per_step.append(certainties[:, 1, :].mean(dim=0).cpu().numpy())
+                                        test_certainty_per_step.append(
+                                            certainties[:, 1, :]
+                                            .mean(dim=0)
+                                            .cpu()
+                                            .numpy()
+                                        )
 
                                 elif args.model == "ctm_with_innovations":
                                     these_predictions, certainties, _, _ = model(inputs)
-                                    loss, where_most_certain = image_classification_loss(
-                                        these_predictions,
-                                        certainties,
-                                        targets,
-                                        use_most_certain=True,
+                                    loss, where_most_certain = (
+                                        image_classification_loss(
+                                            these_predictions,
+                                            certainties,
+                                            targets,
+                                            use_most_certain=True,
+                                        )
                                     )
                                     all_predictions_list.append(
-                                        these_predictions.argmax(1).detach().cpu().numpy()
+                                        these_predictions.argmax(1)
+                                        .detach()
+                                        .cpu()
+                                        .numpy()
                                     )
                                     all_predictions_most_certain_list.append(
                                         these_predictions.argmax(1)[
@@ -1542,18 +1645,25 @@ def main(cfg: DictConfig):
                                         .cpu()
                                         .numpy()
                                     )
-                                    all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+                                    all_where_most_certain_list.append(
+                                        where_most_certain.detach().cpu().numpy()
+                                    )
 
                                 elif args.model == "lstm":
                                     these_predictions, certainties, _ = model(inputs)
-                                    loss, where_most_certain = image_classification_loss(
-                                        these_predictions,
-                                        certainties,
-                                        targets,
-                                        use_most_certain=True,
+                                    loss, where_most_certain = (
+                                        image_classification_loss(
+                                            these_predictions,
+                                            certainties,
+                                            targets,
+                                            use_most_certain=True,
+                                        )
                                     )
                                     all_predictions_list.append(
-                                        these_predictions.argmax(1).detach().cpu().numpy()
+                                        these_predictions.argmax(1)
+                                        .detach()
+                                        .cpu()
+                                        .numpy()
                                     )
                                     all_predictions_most_certain_list.append(
                                         these_predictions.argmax(1)[
@@ -1567,13 +1677,20 @@ def main(cfg: DictConfig):
                                         .cpu()
                                         .numpy()
                                     )
-                                    all_where_most_certain_list.append(where_most_certain.detach().cpu().numpy())
+                                    all_where_most_certain_list.append(
+                                        where_most_certain.detach().cpu().numpy()
+                                    )
 
                                 elif args.model == "ff":
                                     these_predictions = model(inputs)
-                                    loss = nn.CrossEntropyLoss()(these_predictions, targets)
+                                    loss = nn.CrossEntropyLoss()(
+                                        these_predictions, targets
+                                    )
                                     all_predictions_list.append(
-                                        these_predictions.argmax(1).detach().cpu().numpy()
+                                        these_predictions.argmax(1)
+                                        .detach()
+                                        .cpu()
+                                        .numpy()
                                     )
 
                                 elif args.model == "clip_adapter":
@@ -1582,9 +1699,9 @@ def main(cfg: DictConfig):
                                     all_predictions_list.append(
                                         logits.argmax(1).detach().cpu().numpy()
                                     )
-    
+
                                 all_losses.append(loss.item())
-    
+
                                 if (
                                     args.n_test_batches != -1
                                     and inferi >= args.n_test_batches - 1
@@ -1599,7 +1716,12 @@ def main(cfg: DictConfig):
                     all_predictions = np.concatenate(all_predictions_list)
                     test_losses.append(np.mean(all_losses))
 
-                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
+                    if args.model in [
+                        "ctm",
+                        "ctm_with_innovations",
+                        "lstm",
+                        "ctm_gated",
+                    ]:
                         current_test_accuracies = np.mean(
                             all_predictions == all_targets[..., np.newaxis], axis=0
                         )
@@ -1623,33 +1745,68 @@ def main(cfg: DictConfig):
                         "Test Loss": test_losses[-1],
                     }
 
-                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
+                    if args.model in [
+                        "ctm",
+                        "ctm_with_innovations",
+                        "lstm",
+                        "ctm_gated",
+                    ]:
                         log_dict["Test Accuracy (Most Certain)"] = (
                             current_test_accuracies_most_certain
                         )
                         # Log where_most_certain statistics
                         if all_where_most_certain_list:
-                            all_where_most_certain = np.concatenate(all_where_most_certain_list)
-                            log_dict["Test Most Certain Tick (Mean)"] = all_where_most_certain.mean()
-                            log_dict["Test Most Certain Tick (Median)"] = np.median(all_where_most_certain)
-                            log_dict["Test Most Certain Tick (Min)"] = all_where_most_certain.min()
-                            log_dict["Test Most Certain Tick (Max)"] = all_where_most_certain.max()
-                            log_dict["Test Most Certain Tick (Std)"] = all_where_most_certain.std()
-                            log_dict["Test Most Certain Tick Distribution"] = wandb.Histogram(all_where_most_certain)
+                            all_where_most_certain = np.concatenate(
+                                all_where_most_certain_list
+                            )
+                            log_dict["Test Most Certain Tick (Mean)"] = (
+                                all_where_most_certain.mean()
+                            )
+                            log_dict["Test Most Certain Tick (Median)"] = np.median(
+                                all_where_most_certain
+                            )
+                            log_dict["Test Most Certain Tick (Min)"] = (
+                                all_where_most_certain.min()
+                            )
+                            log_dict["Test Most Certain Tick (Max)"] = (
+                                all_where_most_certain.max()
+                            )
+                            log_dict["Test Most Certain Tick (Std)"] = (
+                                all_where_most_certain.std()
+                            )
+                            log_dict["Test Most Certain Tick Distribution"] = (
+                                wandb.Histogram(all_where_most_certain)
+                            )
                         for i, acc in enumerate(current_test_accuracies):
                             log_dict[f"Test Accuracy (Tick {i})"] = acc
                         if args.model == "ctm_gated" and test_exit_steps:
                             log_dict["Test Avg Exit Steps"] = np.mean(test_exit_steps)
                             if test_certainty_at_exit:
-                                log_dict["Test Certainty at Exit"] = np.mean(test_certainty_at_exit)
+                                log_dict["Test Certainty at Exit"] = np.mean(
+                                    test_certainty_at_exit
+                                )
                             if test_certainty_per_step:
                                 # Log certainty at specific steps
-                                avg_certainty_per_step = np.mean(test_certainty_per_step, axis=0)
-                                log_dict["Test Certainty (Step 5)"] = avg_certainty_per_step[4] if len(avg_certainty_per_step) > 4 else 0
-                                log_dict["Test Certainty (Step 10)"] = avg_certainty_per_step[9] if len(avg_certainty_per_step) > 9 else 0
-                                log_dict["Test Certainty (Final)"] = avg_certainty_per_step[-1]
+                                avg_certainty_per_step = np.mean(
+                                    test_certainty_per_step, axis=0
+                                )
+                                log_dict["Test Certainty (Step 5)"] = (
+                                    avg_certainty_per_step[4]
+                                    if len(avg_certainty_per_step) > 4
+                                    else 0
+                                )
+                                log_dict["Test Certainty (Step 10)"] = (
+                                    avg_certainty_per_step[9]
+                                    if len(avg_certainty_per_step) > 9
+                                    else 0
+                                )
+                                log_dict["Test Certainty (Final)"] = (
+                                    avg_certainty_per_step[-1]
+                                )
                                 # Log full trajectory as histogram
-                                log_dict["Test Certainty Trajectory"] = wandb.Histogram(avg_certainty_per_step)
+                                log_dict["Test Certainty Trajectory"] = wandb.Histogram(
+                                    avg_certainty_per_step
+                                )
                     else:  # FF
                         log_dict["Test Accuracy"] = current_test_accuracies
 
@@ -1657,11 +1814,16 @@ def main(cfg: DictConfig):
 
                 # Save best model checkpoint based on validation (test) accuracy
                 if args.save_best_model and valloader is not None:
-                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
+                    if args.model in [
+                        "ctm",
+                        "ctm_with_innovations",
+                        "lstm",
+                        "ctm_gated",
+                    ]:
                         current_val_acc = current_test_accuracies_most_certain
                     else:
                         current_val_acc = current_test_accuracies
-                    
+
                     if current_val_acc > best_val_acc:
                         best_val_acc = current_val_acc
                         best_checkpoint = {
@@ -1677,11 +1839,22 @@ def main(cfg: DictConfig):
                             "iters": iters,
                             "best_val_acc": best_val_acc,
                         }
-                        if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
-                            best_checkpoint["train_accuracies_most_certain"] = train_accuracies_most_certain
-                            best_checkpoint["test_accuracies_most_certain"] = test_accuracies_most_certain
+                        if args.model in [
+                            "ctm",
+                            "ctm_with_innovations",
+                            "lstm",
+                            "ctm_gated",
+                        ]:
+                            best_checkpoint["train_accuracies_most_certain"] = (
+                                train_accuracies_most_certain
+                            )
+                            best_checkpoint["test_accuracies_most_certain"] = (
+                                test_accuracies_most_certain
+                            )
                         torch.save(best_checkpoint, best_checkpoint_path)
-                        print(f"Saved best checkpoint with val_acc={best_val_acc:.4f} at iteration {bi}")
+                        print(
+                            f"Saved best checkpoint with val_acc={best_val_acc:.4f} at iteration {bi}"
+                        )
 
                 # Plotting (conditional)
                 if test_data is None:
@@ -1692,7 +1865,12 @@ def main(cfg: DictConfig):
                     axacc_test = figacc.add_subplot(212)
                     cm = sns.color_palette("viridis", as_cmap=True)
 
-                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
+                    if args.model in [
+                        "ctm",
+                        "ctm_with_innovations",
+                        "lstm",
+                        "ctm_gated",
+                    ]:
                         # Plot per-tick accuracy for CTM/LSTM
                         train_acc_arr = np.array(train_accuracies)  # Shape (N_iters, T)
                         test_acc_arr = np.array(test_accuracies)  # Shape (N_iters, T)
@@ -1774,7 +1952,10 @@ def main(cfg: DictConfig):
                     plt.close(figloss)
 
                 # Conditional Visualization (Only for CTM/LSTM)
-                if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"] and testloader is not None:
+                if (
+                    args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]
+                    and testloader is not None
+                ):
                     try:  # For safety
                         inputs_viz, targets_viz = next(
                             iter(testloader)
@@ -1907,10 +2088,14 @@ def main(cfg: DictConfig):
     if args.final_test_eval and testloader is not None and args.save_best_model:
         if os.path.isfile(best_checkpoint_path):
             print(f"Loading best checkpoint from: {best_checkpoint_path}")
-            checkpoint = torch.load(best_checkpoint_path, map_location=device, weights_only=False)
+            checkpoint = torch.load(
+                best_checkpoint_path, map_location=device, weights_only=False
+            )
             model.load_state_dict(checkpoint["model_state_dict"])
-            print(f"Loaded best model with val_acc={checkpoint.get('best_val_acc', 'N/A'):.4f}")
-        
+            print(
+                f"Loaded best model with val_acc={checkpoint.get('best_val_acc', 'N/A'):.4f}"
+            )
+
         print("Running final evaluation on test set...")
         model.eval()
         final_test_acc = 0
@@ -1919,8 +2104,17 @@ def main(cfg: DictConfig):
         with torch.inference_mode():
             for i, (inputs, targets) in enumerate(testloader):
                 inputs, targets = inputs.to(device), targets.to(device)
-                with torch.autocast(device_type="cuda" if "cuda" in device else "cpu", dtype=torch.float16, enabled=args.use_amp):
-                    if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
+                with torch.autocast(
+                    device_type="cuda" if "cuda" in device else "cpu",
+                    dtype=torch.float16,
+                    enabled=args.use_amp,
+                ):
+                    if args.model in [
+                        "ctm",
+                        "ctm_with_innovations",
+                        "lstm",
+                        "ctm_gated",
+                    ]:
                         if args.model == "ctm_gated":
                             predictions, certainties, _, _, _ = model(inputs)
                         else:
@@ -1929,32 +2123,43 @@ def main(cfg: DictConfig):
                             predictions, certainties, targets, use_most_certain=True
                         )
                         outputs = predictions[
-                            torch.arange(predictions.size(0), device=predictions.device),
+                            torch.arange(
+                                predictions.size(0), device=predictions.device
+                            ),
                             :,
-                            where_most_certain
+                            where_most_certain,
                         ]
                     else:
                         outputs = model(inputs)
                         loss = nn.CrossEntropyLoss()(outputs, targets)
-                
+
                 if args.model in ["ctm", "ctm_with_innovations", "lstm", "ctm_gated"]:
-                    final_test_acc += (outputs.argmax(1) == targets).float().sum().item()
+                    final_test_acc += (
+                        (outputs.argmax(1) == targets).float().sum().item()
+                    )
                 else:
-                    final_test_acc += (outputs.argmax(1) == targets).float().sum().item()
-                
+                    final_test_acc += (
+                        (outputs.argmax(1) == targets).float().sum().item()
+                    )
+
                 final_test_loss += loss.item() * inputs.size(0)
                 final_test_count += inputs.size(0)
                 if args.n_test_batches != -1 and i >= args.n_test_batches - 1:
                     break
-        
+
         final_test_acc /= final_test_count
         final_test_loss /= final_test_count
-        print(f"Final Test Accuracy: {final_test_acc:.4f}, Test Loss: {final_test_loss:.4f}")
+        print(
+            f"Final Test Accuracy: {final_test_acc:.4f}, Test Loss: {final_test_loss:.4f}"
+        )
         if args.use_wandb:
-            wandb.log({
-                "Final Test Accuracy": final_test_acc,
-                "Final Test Loss": final_test_loss,
-            }, step=args.training_iterations)
+            wandb.log(
+                {
+                    "Final Test Accuracy": final_test_acc,
+                    "Final Test Loss": final_test_loss,
+                },
+                step=args.training_iterations,
+            )
             wandb.finish()
 
 
