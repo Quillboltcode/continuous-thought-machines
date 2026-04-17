@@ -604,8 +604,9 @@ def main():
         "RAFDB",
         "FerPlusPlus",
         "affectnet",
+        "mitbih",
     ], (
-        f"Need to be one of cifar10, cifar100, imagenet, RAFDB, FerPlusPlus, affectnet, got {args.dataset}"
+        f"Need to be one of cifar10, cifar100, imagenet, RAFDB, FerPlusPlus, affectnet, mitbih, got {args.dataset}"
     )
 
     # Data
@@ -1473,8 +1474,6 @@ def main():
                         log_dict["Train Accuracy"] = current_train_accuracies
 
                     wandb.log(log_dict, step=bi)
-
-                del these_predictions
 
                 # Switch to eval mode for test metrics (fixed BN stats)
                 model.eval()
