@@ -235,6 +235,12 @@ def parse_args():
         help="Length of the pre-activation history for NLMS (CTM only).",
     )
     parser.add_argument(
+        "--group_count",
+        type=int,
+        default=0,
+        help="Number of neuron groups for region-based memory (CTM only). 0 means no grouping.",
+    )
+    parser.add_argument(
         "--deep_memory",
         action=argparse.BooleanOptionalAction,
         default=True,

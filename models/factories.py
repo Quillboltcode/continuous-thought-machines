@@ -51,6 +51,7 @@ def create_model(args, prediction_reshaper=None):
             neuron_select_type=args.neuron_select_type,
             n_random_pairing_self=args.n_random_pairing_self,
             grayscale=args.grayscale,
+            group_count=getattr(args, 'group_count', 0),
         )
     elif args.model == "ctm_gated":
         model = CTMGated(

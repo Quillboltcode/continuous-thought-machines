@@ -77,7 +77,10 @@ class ContinuousThoughtMachine(nn.Module):
                         NOTE: when using random-pairing, i-to-i (self) synchronisation is rare, meaning that 'recovering a
                         snapshot representation' (see paper) is difficult. This alleviates that. 
                         NOTE: works fine when set to 0.
-    """                               
+        group_count (int): Number of neuron groups for region-based memory. If > 0, neurons are divided into
+                          this many groups, each with separate NLM. This allows different neuron groups to
+                          specialize for different features/regions. 0 means no grouping (default behavior).
+        """                               
 
     def __init__(self,
                  iterations,
@@ -98,10 +101,11 @@ class ContinuousThoughtMachine(nn.Module):
                  prediction_reshaper=[-1],
                  dropout=0,
                  dropout_nlm=None,
-                  neuron_select_type='random-pairing',  
-                  n_random_pairing_self=0,
-                  grayscale=False,
-                  ):
+                 neuron_select_type='random-pairing',  
+                 n_random_pairing_self=0,
+                 grayscale=False,
+                 group_count=0,  # Number of neurons per group (0 = no grouping, all neurons together)
+                 ):
         super(ContinuousThoughtMachine, self).__init__()
 
         # --- Core Parameters ---
@@ -114,6 +118,8 @@ class ContinuousThoughtMachine(nn.Module):
         self.n_synch_action = n_synch_action
         self.backbone_type = backbone_type
         self.pretrained_backbone = pretrained_backbone
+        self.group_count = group_count  # Number of groups for region-based memory (0 = no grouping)
+        self.group_size = d_model // group_count if group_count > 0 else d_model
         # FORK_NOTE: we trying use a pretrained backbone in the report
         self.out_dims = out_dims
         self.positional_embedding_type = positional_embedding_type
@@ -354,33 +360,64 @@ class ContinuousThoughtMachine(nn.Module):
         """
         Neuron level models are one of the core innovations of the CTM. They apply separate MLPs/linears to 
         each neuron.
+        
+        When group_count > 0, neurons are divided into groups and each group has separate NLMs.
+        This allows different neuron groups to specialize for different regions/features.
+        
         NOTE: the name 'SuperLinear' is largely legacy, but its purpose is to apply separate linear layers
             per neuron. It is sort of a 'grouped linear' function, where the group size is equal to 1. 
             One could make the group size bigger and use fewer parameters, but that is future work.
 
         NOTE: We used GLU() nonlinearities because they worked well in practice. 
         """
-        if deep_nlms:
-            return nn.Sequential(
-                nn.Sequential(
-                    SuperLinear(in_dims=memory_length, out_dims=2 * memory_hidden_dims, N=d_model,
-                                do_norm=do_layernorm_nlm, dropout=dropout),
-                    nn.GLU(),
-                    SuperLinear(in_dims=memory_hidden_dims, out_dims=2, N=d_model,
-                                do_norm=do_layernorm_nlm, dropout=dropout),
-                    nn.GLU(),
-                    Squeeze(-1)
-                )
-            )
+        if self.group_count > 0:
+            # Group-based NLM: each group has its own set of neurons
+            # For simplicity, we use the same NLM architecture but the SuperLinear 
+            # will handle each group separately via the N parameter
+            # Actually, we need separate NLM blocks per group
+            group_nlms = nn.ModuleList()
+            for g in range(self.group_count):
+                if deep_nlms:
+                    group_nlms.append(nn.Sequential(
+                        SuperLinear(in_dims=memory_length, out_dims=2 * memory_hidden_dims, N=self.group_size,
+                                    do_norm=do_layernorm_nlm, dropout=dropout),
+                        nn.GLU(),
+                        SuperLinear(in_dims=memory_hidden_dims, out_dims=2, N=self.group_size,
+                                    do_norm=do_layernorm_nlm, dropout=dropout),
+                        nn.GLU(),
+                        Squeeze(-1)
+                    ))
+                else:
+                    group_nlms.append(nn.Sequential(
+                        SuperLinear(in_dims=memory_length, out_dims=2, N=self.group_size,
+                                    do_norm=do_layernorm_nlm, dropout=dropout),
+                        nn.GLU(),
+                        Squeeze(-1)
+                    ))
+            return group_nlms
         else:
-            return nn.Sequential(
-                nn.Sequential(
-                    SuperLinear(in_dims=memory_length, out_dims=2, N=d_model,
-                                do_norm=do_layernorm_nlm, dropout=dropout),
-                    nn.GLU(),
-                    Squeeze(-1)
+            # Original: single NLM for all neurons
+            if deep_nlms:
+                return nn.Sequential(
+                    nn.Sequential(
+                        SuperLinear(in_dims=memory_length, out_dims=2 * memory_hidden_dims, N=d_model,
+                                    do_norm=do_layernorm_nlm, dropout=dropout),
+                        nn.GLU(),
+                        SuperLinear(in_dims=memory_hidden_dims, out_dims=2, N=d_model,
+                                    do_norm=do_layernorm_nlm, dropout=dropout),
+                        nn.GLU(),
+                        Squeeze(-1)
+                    )
                 )
-            )
+            else:
+                return nn.Sequential(
+                    nn.Sequential(
+                        SuperLinear(in_dims=memory_length, out_dims=2, N=d_model,
+                                    do_norm=do_layernorm_nlm, dropout=dropout),
+                        nn.GLU(),
+                        Squeeze(-1)
+                    )
+                )
 
     def get_synapses(self, synapse_depth, d_model, dropout):
         """
@@ -544,7 +581,19 @@ class ContinuousThoughtMachine(nn.Module):
             state_trace = torch.cat((state_trace[:, :, 1:], state.unsqueeze(-1)), dim=-1)
 
             # --- Apply Neuron-Level Models ---
-            activated_state = self.trace_processor(state_trace)
+            if self.group_count > 0:
+                # Apply separate NLM for each group
+                activated_state_parts = []
+                for g in range(self.group_count):
+                    start_idx = g * self.group_size
+                    end_idx = start_idx + self.group_size
+                    group_trace = state_trace[:, start_idx:end_idx, :]
+                    group_out = self.trace_processor[g](group_trace)
+                    activated_state_parts.append(group_out)
+                activated_state = torch.cat(activated_state_parts, dim=1)
+            else:
+                # Original: single NLM for all neurons
+                activated_state = self.trace_processor(state_trace)
             # One would also keep an 'activated_state_trace' as the history of outgoing post-activations
             # BUT, this is unnecessary because the synchronisation calculation is fully linear and can be
             # done using only the currect activated state (see compute_synchronisation method for explanation)
