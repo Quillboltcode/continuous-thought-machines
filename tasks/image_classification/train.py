@@ -2067,11 +2067,11 @@ def main():
                     # Always save these
                     "train_losses": train_losses,
                     "test_losses": test_losses,
-                    "train_accuracies": train_accuracies,  # This is list of scalars for FF, list of arrays for CTM/LSTM
-                    "test_accuracies": test_accuracies,  # This is list of scalars for FF, list of arrays for CTM/LSTM
+                    "train_accuracies": train_accuracies,
+                    "test_accuracies": test_accuracies,
                     "iters": iters,
                     "best_val_acc": best_val_acc,
-                    "args": args,  # Save args used for this run
+                    "args": vars(args),  # Save as dict for pickling
                     # RNG states
                     "torch_rng_state": torch.get_rng_state(),
                     "numpy_rng_state": np.random.get_state(),
