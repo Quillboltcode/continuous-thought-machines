@@ -99,6 +99,7 @@ def parse_args():
                         help='Protocol for selecting neuron subset.')
     parser.add_argument('--n_random_pairing_self', type=int, default=0, help='Self-to-self synch pairs.')
     parser.add_argument('--memory_length', type=int, default=20, help='Pre-activation history length.')
+    parser.add_argument('--group_count', type=int, default=0, help='Number of neuron groups for region-based memory (CTM only). 0 means no grouping.')
     parser.add_argument('--deep_memory', action=argparse.BooleanOptionalAction, default=True, help='Use deep memory.')
     parser.add_argument('--memory_hidden_dims', type=int, default=16, help='Hidden dims for deep memory.')
     parser.add_argument('--dropout_nlm', type=float, default=None, help='Dropout for NLMs.')
@@ -745,7 +746,7 @@ if __name__=='__main__':
                 'train_losses': train_losses,
                 'test_losses': test_losses,
                 'iters': iters,
-                'args': args,
+                'args': vars(args),
                 'train_accuracies_most_certain': train_accuracies_most_certain,
                 'test_accuracies_most_certain': test_accuracies_most_certain,
                 'best_val_acc': best_val_acc,
