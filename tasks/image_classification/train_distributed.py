@@ -323,7 +323,7 @@ if __name__=='__main__':
 
     # Initialize lazy modules with proper input size
     # Must run multiple times to ensure all lazy modules are initialized
-    if args.model == 'clip_ctm':
+    if args.model in ('ctm', 'clip_ctm'):
         try:
             print(f"Initializing lazy modules for {args.model}...")
             # First initialize model on CPU, then move to device
@@ -345,11 +345,21 @@ if __name__=='__main__':
             import traceback
             traceback.print_exc()
     elif args.model == 'clip_adapter':
-        # clip_adapter doesn't have lazy modules, just move to device
-        model_base = model_base.to(device)
+        # Run dummy forward pass to initialize any lazy modules in CLIP
+        try:
+            print(f"Initializing lazy modules for {args.model}...")
+            for _ in range(3):
+                pseudo_inputs = torch.randn(2, 3, args.img_size, args.img_size).to(device)
+                with torch.no_grad():
+                    _ = model_base(pseudo_inputs)
+            print("Lazy module initialization complete.")
+        except Exception as e:
+            print(f"Warning: Pseudo forward pass failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     # Wrap model with DDP
-    find_unused = args.model in ('ctm_fwpkm', 'clip_ctm', 'clip_adapter')  # These models may have unused parameters
+    find_unused = args.model in ('ctm', 'ctm_fwpkm', 'clip_ctm', 'clip_adapter')  # These models may have unused parameters
     if device.type == 'cuda' and world_size > 1:
         model = DDP(model_base, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused)
     elif device.type == 'cpu' and world_size > 1:

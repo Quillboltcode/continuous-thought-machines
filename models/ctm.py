@@ -509,6 +509,10 @@ class ContinuousThoughtMachine(nn.Module):
         assert self.positional_embedding_type in VALID_POSITIONAL_EMBEDDING_TYPES + ['none'], \
             f"Invalid positional_embedding_type: {self.positional_embedding_type}"
         
+        if self.group_count > 0:
+            assert self.d_model % self.group_count == 0, \
+                f"d_model ({self.d_model}) must be divisible by group_count ({self.group_count})"
+        
         if self.neuron_select_type == 'first-last':
             assert self.d_model >= (self.n_synch_out + self.n_synch_action), \
                 "d_model must be >= n_synch_out + n_synch_action for neuron subsets"
