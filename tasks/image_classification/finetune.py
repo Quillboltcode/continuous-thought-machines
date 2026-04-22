@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import timm
+import open_clip
 from transformers import CLIPVisionModel, CLIPProcessor
 
 if torch.cuda.is_available():
@@ -37,10 +38,13 @@ def parse_args():
     parser.add_argument("--conv1_kernel_size", type=int, default=7, help="Kernel size for conv1")
     parser.add_argument("--convert_grayscale_to_rgb", action="store_true", default=False, help="Convert grayscale images to 3-channel RGB")
     
-    parser.add_argument("--model_type", type=str, default="torchvision", choices=["torchvision", "timm", "clip"], help="Model type: torchvision (resnet), timm (ViT), clip (CLIP)")
+    parser.add_argument("--model_type", type=str, default="torchvision", choices=["torchvision", "timm", "clip", "clip_adapter"], help="Model type: torchvision (resnet), timm (ViT), clip (CLIP), clip_adapter (CLIP-Adapter)")
+    parser.add_argument("--clip_model_name", type=str, default="ViT-B-32", help="CLIP model name (for clip/clip_adapter model_type)")
+    parser.add_argument("--clip_pretrained", type=str, default="laion2b_s34b_b79k", help="CLIP pretrained weights (for clip/clip_adapter model_type)")
+    parser.add_argument("--adapter_reduction", type=int, default=4, help="Adapter reduction ratio (for clip_adapter)")
+    parser.add_argument("--alpha_init", type=float, default=0.5, help="Initial alpha for adapter blend (for clip_adapter)")
     parser.add_argument("--freeze_backbone", action="store_true", default=False, help="Freeze backbone and train only classifier head")
-    parser.add_argument("--clip_model_name", type=str, default="openai/clip-vit-base-patch32", help="CLIP model name (for clip model_type)")
-
+    
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training.")
     parser.add_argument("--batch_size_test", type=int, default=32, help="Batch size for testing.")
     parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate for the model.")
@@ -74,7 +78,7 @@ def parse_args():
 
 
 class FinetuneModel(nn.Module):
-    def __init__(self, backbone_name, num_classes, pretrained=True, grayscale=False, conv1_channels=3, conv1_kernel_size=7, model_type="torchvision", freeze_backbone=False, clip_model_name="openai/clip-vit-base-patch32"):
+    def __init__(self, backbone_name, num_classes, pretrained=True, grayscale=False, conv1_channels=3, conv1_kernel_size=7, model_type="torchvision", freeze_backbone=False, clip_model_name="openai/clip-vit-base-patch32", clip_pretrained="laion2b_s34b_b79k", adapter_reduction=4, alpha_init=0.5):
         super().__init__()
         self.grayscale = grayscale
         self.model_type = model_type
@@ -88,6 +92,20 @@ class FinetuneModel(nn.Module):
             if freeze_backbone:
                 for param in self.backbone.parameters():
                     param.requires_grad = False
+        elif model_type == "clip_adapter":
+            from models.clip_adapter import CLIPAdapterBaseline
+            self.clip_adapter = CLIPAdapterBaseline(
+                clip_model_name=clip_model_name,
+                pretrained=clip_pretrained,
+                adapter_reduction=adapter_reduction,
+                alpha_init=alpha_init,
+                num_classes=num_classes,
+                use_text_prompts=False,
+            )
+            in_features = self.clip_adapter.clip_dim
+            self.clip_adapter.classifier = nn.Linear(in_features, num_classes)
+            nn.init.xavier_uniform_(self.clip_adapter.classifier.weight)
+            nn.init.zeros_(self.clip_adapter.classifier.bias)
         elif model_type == "timm":
             if backbone_name == "vit-tiny":
                 model_name = "vit_tiny_patch16_224"
@@ -134,6 +152,8 @@ class FinetuneModel(nn.Module):
         if self.model_type == "clip":
             outputs = self.backbone.vision_model(pixel_values=x)
             features = outputs.last_hidden_state[:, 0, :]
+        elif self.model_type == "clip_adapter":
+            return self.clip_adapter(x)
         elif self.model_type == "timm":
             features = self.backbone.forward_features(x)
             if len(features.shape) == 3:
@@ -341,7 +361,7 @@ if __name__ == "__main__":
     if args.convert_grayscale_to_rgb:
         args.conv1_channels = 3
     
-    model = FinetuneModel(args.backbone, num_classes, pretrained=args.pretrained, grayscale=args.grayscale, conv1_channels=args.conv1_channels, conv1_kernel_size=args.conv1_kernel_size, model_type=args.model_type, freeze_backbone=args.freeze_backbone, clip_model_name=args.clip_model_name).to(device)
+    model = FinetuneModel(args.backbone, num_classes, pretrained=args.pretrained, grayscale=args.grayscale, conv1_channels=args.conv1_channels, conv1_kernel_size=args.conv1_kernel_size, model_type=args.model_type, freeze_backbone=args.freeze_backbone, clip_model_name=args.clip_model_name, clip_pretrained=args.clip_pretrained, adapter_reduction=args.adapter_reduction, alpha_init=args.alpha_init).to(device)
 
     print(f"Total params: {sum(p.numel() for p in model.parameters())}")
 
