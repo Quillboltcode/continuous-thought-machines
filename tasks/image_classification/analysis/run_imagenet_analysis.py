@@ -18,6 +18,8 @@ import imageio
 import cv2
 from scipy.special import softmax
 from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.decomposition import PCA
+import umap
 from tasks.image_classification.plotting import save_frames_to_mp4
 
 # --- Data Handling & Model ---
@@ -65,7 +67,9 @@ def parse_args():
     """Parses command-line arguments."""
     # Note: Original had two ArgumentParser instances, using the second one.
     parser = argparse.ArgumentParser(description="Visualize Continuous Thought Machine Attention")
-    parser.add_argument('--actions', type=str, nargs='+', default=['videos'], choices=['plots', 'videos', 'demo', 'classification_report'], help="Actions to take: plots (results plots), videos (gifs/mp4s to watch attention), demo (last frame of internal ticks), classification_report (per-class accuracy metrics)")
+    parser.add_argument('--actions', type=str, nargs='+', default=['videos'], choices=['plots', 'videos', 'demo', 'classification_report', 'latent_viz'], help="Actions to take: plots (results plots), videos (gifs/mp4s to watch attention), demo (last frame of internal ticks), classification_report (per-class accuracy metrics), latent_viz (visualize latent evolution with PCA/UMAP)")
+    parser.add_argument('--latent_viz_type', type=str, default='both', choices=['pca', 'umap', 'both'], help="Dimensionality reduction for latent visualization")
+    parser.add_argument('--latent_n_samples', type=int, default=100, help="Number of samples for latent visualization")
     parser.add_argument('--device', type=int, nargs='+', default=[-1], help="GPU device index or -1 for CPU")
     
     parser.add_argument('--checkpoint', type=str, default='checkpoints/imagenet/ctm_clean.pt', help="Path to ATM checkpoint")
@@ -853,6 +857,136 @@ if __name__=='__main__':
         plt.savefig(f'{args.output_dir}/per_class_accuracy.pdf', dpi=200)
         plt.close()
         print(f"Per-class accuracy saved to {args.output_dir}/per_class_accuracy.png")
+
+    if 'latent_viz' in args.actions:
+        print("\n=== Latent Visualization ===")
+        
+        n_samples = min(args.latent_n_samples, len(validation_dataset))
+        all_latents = []
+        all_targets = []
+        all_predictions = []
+        
+        with torch.inference_mode():
+            indices = np.random.choice(len(validation_dataset), size=n_samples, replace=False)
+            
+            for bi, idx in enumerate(tqdm(indices, desc="Collecting latents")):
+                inputs, targets = validation_dataset[idx]
+                inputs = inputs.to(device).unsqueeze(0)
+                
+                predictions, certainties, _, pre_activations, post_activations, _ = model(inputs, track=True)
+                
+                all_latents.append(post_activations[0])  # (T, N) for this sample
+                all_targets.append(targets)
+                
+                where_most_certain = certainties[:, 1, :].argmax(dim=1)
+                preds = predictions.argmax(dim=1)[0, where_most_certain.item()]
+                all_predictions.append(preds.item())
+        
+        all_latents = np.array(all_latents)  # (B, T, N)
+        all_targets = np.array(all_targets)
+        
+        print(f"Collected latents shape: {all_latents.shape}")  # (B, T, N)
+        
+        B, T, N = all_latents.shape
+        
+        latent_flat = all_latents.reshape(B * T, N)  # (B*T, N)
+        tick_ids = np.repeat(np.arange(T), B)  # (B*T,)
+        sample_ids = np.tile(np.arange(B), T)  # (B*T,)
+        
+        viz_types = [args.latent_viz_type] if args.latent_viz_type == 'both' else [args.latent_viz_type]
+        if args.latent_viz_type == 'both':
+            viz_types = ['pca', 'umap']
+        
+        for viz_type in viz_types:
+            print(f"Computing {viz_type.upper()}...")
+            
+            if viz_type == 'pca':
+                reducer = PCA(n_components=2, random_state=42)
+                embedding = reducer.fit_transform(latent_flat)
+                title = f"PCA of Latent States Across Ticks"
+            else:
+                reducer = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, random_state=42)
+                embedding = reducer.fit_transform(latent_flat)
+                title = f"UMAP of Latent States Across Ticks"
+            
+            embedding_2d = embedding.reshape(T, B, 2)  # (T, B, 2)
+            
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+            
+            ax1 = axes[0]
+            tick_colors = plt.cm.viridis(np.linspace(0, 1, T))
+            for t in range(T):
+                ax1.scatter(embedding_2d[t, :, 0], embedding_2d[t, :, 1], 
+                           c=[tick_colors[t]], label=f'Tick {t+1}' if t % 5 == 0 else '', 
+                           alpha=0.6, s=30)
+            ax1.set_xlabel(f'{viz_type.upper()} Component 1')
+            ax1.set_ylabel(f'{viz_type.upper()} Component 2')
+            ax1.set_title(f'{title}\n(Color = Tick, Each dot = Sample)')
+            ax1.legend(loc='best', fontsize=8)
+            
+            ax2 = axes[1]
+            mean_centers = embedding_2d.mean(axis=1)
+            ax2.plot(np.arange(1, T+1), mean_centers[:, 0], 'o-', label='Dim 1', linewidth=2)
+            ax2.plot(np.arange(1, T+1), mean_centers[:, 1], 's-', label='Dim 2', linewidth=2)
+            ax2.set_xlabel('Tick')
+            ax2.set_ylabel(f'{viz_type.upper()} Coordinate')
+            ax2.set_title(f'Mean Latent Position Over Ticks')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(f'{args.output_dir}/latent_{viz_type}_evolution.png', dpi=200)
+            plt.savefig(f'{args.output_dir}/latent_{viz_type}_evolution.pdf', dpi=200)
+            plt.close()
+            print(f"Saved {viz_type} latent evolution to {args.output_dir}/latent_{viz_type}_evolution.png")
+            
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            for t in range(T):
+                ax.scatter(embedding_2d[t, :, 0], embedding_2d[t, :, 1], 
+                          c=[tick_colors[t]], alpha=0.5, s=40)
+                
+                mean_x = embedding_2d[t, :, 0].mean()
+                mean_y = embedding_2d[t, :, 1].mean()
+                ax.annotate(str(t+1), (mean_x, mean_y), fontsize=10, fontweight='bold',
+                           ha='center', va='center',
+                           bbox=dict(boxstyle='circle,pad=0.3', facecolor='white', alpha=0.8))
+                
+                if t > 0:
+                    prev_mean_x = embedding_2d[t-1, :, 0].mean()
+                    prev_mean_y = embedding_2d[t-1, :, 1].mean()
+                    ax.arrow(prev_mean_x, prev_mean_y, 
+                            mean_x - prev_mean_x, mean_y - prev_mean_y,
+                            head_width=0.05, head_length=0.03, fc='gray', ec='gray', alpha=0.5)
+            
+            ax.set_xlabel(f'{viz_type.upper()} Component 1')
+            ax.set_ylabel(f'{viz_type.upper()} Component 2')
+            ax.set_title(f'Latent Trajectory Over Recurrent Ticks\n(Arrows show mean movement direction)')
+            
+            sm = plt.cm.ScalarMappable(cmap=plt.cm.viridis, norm=plt.Normalize(vmin=1, vmax=T))
+            sm.set_array([])
+            cbar = plt.colorbar(sm, ax=ax)
+            cbar.set_label('Tick Number')
+            
+            plt.tight_layout()
+            plt.savefig(f'{args.output_dir}/latent_{viz_type}_trajectory.png', dpi=200)
+            plt.savefig(f'{args.output_dir}/latent_{viz_type}_trajectory.pdf', dpi=200)
+            plt.close()
+            print(f"Saved {viz_type} latent trajectory to {args.output_dir}/latent_{viz_type}_trajectory.png")
+            
+            latent_dists = np.linalg.norm(embedding_2d[1:] - embedding_2d[:-1], axis=2).mean(axis=1)
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.bar(np.arange(1, T), latent_dists, color='steelblue', alpha=0.7)
+            ax.set_xlabel('Tick Transition')
+            ax.set_ylabel('Mean Euclidean Distance')
+            ax.set_title(f'Latent Movement Magnitude Between Ticks ({viz_type.upper()})')
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(f'{args.output_dir}/latent_{viz_type}_movement.png', dpi=200)
+            plt.close()
+            print(f"Saved {viz_type} latent movement to {args.output_dir}/latent_{viz_type}_movement.png")
+        
+        print("Latent visualization complete!")
 
     if 'videos' in args.actions:
         if not args.data_indices: # If list is empty
