@@ -100,6 +100,8 @@ def parse_args():
     parser.add_argument('--n_random_pairing_self', type=int, default=0, help='Self-to-self synch pairs.')
     parser.add_argument('--memory_length', type=int, default=20, help='Pre-activation history length.')
     parser.add_argument('--group_count', type=int, default=0, help='Number of neuron groups for region-based memory (CTM only). 0 means no grouping.')
+    parser.add_argument('--memory_write_type', type=str, default='fifo', choices=['fifo', 'attention'],
+                        help='Memory write mechanism: fifo (sliding window) or attention (learned attention-based).')
     parser.add_argument('--deep_memory', action=argparse.BooleanOptionalAction, default=True, help='Use deep memory.')
     parser.add_argument('--memory_hidden_dims', type=int, default=16, help='Hidden dims for deep memory.')
     parser.add_argument('--dropout_nlm', type=float, default=None, help='Dropout for NLMs.')

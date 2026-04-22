@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch
+import torch.nn.functional as F
 import numpy as np
 import math
 
@@ -101,11 +102,12 @@ class ContinuousThoughtMachine(nn.Module):
                  prediction_reshaper=[-1],
                  dropout=0,
                  dropout_nlm=None,
-                 neuron_select_type='random-pairing',  
-                 n_random_pairing_self=0,
-                 grayscale=False,
-                 group_count=0,  # Number of neurons per group (0 = no grouping, all neurons together)
-                 ):
+neuron_select_type='random-pairing',  
+                  n_random_pairing_self=0,
+                  grayscale=False,
+                  group_count=0,  # Number of neurons per group (0 = no grouping, all neurons together)
+                  memory_write_type='fifo',  # 'fifo' = sliding window (default), 'attention' = attention-based write
+                  ):
         super(ContinuousThoughtMachine, self).__init__()
 
         # --- Core Parameters ---
@@ -120,6 +122,7 @@ class ContinuousThoughtMachine(nn.Module):
         self.pretrained_backbone = pretrained_backbone
         self.group_count = group_count  # Number of groups for region-based memory (0 = no grouping)
         self.group_size = d_model // group_count if group_count > 0 else d_model
+        self.memory_write_type = memory_write_type  # 'fifo' or 'attention'
         # FORK_NOTE: we trying use a pretrained backbone in the report
         self.out_dims = out_dims
         self.positional_embedding_type = positional_embedding_type
@@ -139,6 +142,12 @@ class ContinuousThoughtMachine(nn.Module):
         self.kv_proj = nn.Sequential(nn.LazyLinear(self.d_input), nn.LayerNorm(self.d_input)) if heads else None
         self.q_proj = nn.LazyLinear(self.d_input) if heads else None
         self.attention = nn.MultiheadAttention(self.d_input, heads, dropout, batch_first=True) if heads else None
+        
+        # --- Memory Attention (for attention-based write) ---
+        if memory_write_type == 'attention':
+            self.memory_query_proj = nn.Linear(d_model, d_model)
+            self.memory_key_proj = nn.Linear(d_model, d_model)
+            self.memory_value_proj = nn.Linear(d_model, d_model)
         
         # --- Core CTM Modules ---
         self.synapses = self.get_synapses(synapse_depth, d_model, dropout)
@@ -513,6 +522,9 @@ class ContinuousThoughtMachine(nn.Module):
             assert self.d_model % self.group_count == 0, \
                 f"d_model ({self.d_model}) must be divisible by group_count ({self.group_count})"
         
+        assert self.memory_write_type in ('fifo', 'attention'), \
+            f"Invalid memory_write_type: {self.memory_write_type}"
+        
         if self.neuron_select_type == 'first-last':
             assert self.d_model >= (self.n_synch_out + self.n_synch_action), \
                 "d_model must be >= n_synch_out + n_synch_action for neuron subsets"
@@ -581,8 +593,31 @@ class ContinuousThoughtMachine(nn.Module):
 
             # --- Apply Synapses ---
             state = self.synapses(pre_synapse_input)
-            # The 'state_trace' is the history of incoming pre-activations
-            state_trace = torch.cat((state_trace[:, :, 1:], state.unsqueeze(-1)), dim=-1)
+            
+            # --- Write to Memory ---
+            if self.memory_write_type == 'attention':
+                # Attention-based write: attend over history BEFORE updating to get attended memory
+                # Query: current state (B, d_model)
+                # Keys/Values: state_trace history (B, d_model, T)
+                q_mem = self.memory_query_proj(state)  # (B, d_model)
+                k_mem = self.memory_key_proj(state_trace.permute(0, 2, 1))  # (B, T, d_model)
+                v_mem = self.memory_value_proj(state_trace.permute(0, 2, 1))  # (B, T, d_model)
+                
+                # Compute attention weights
+                q_mem = q_mem.unsqueeze(1)  # (B, 1, d_model)
+                attn_scores = torch.matmul(q_mem, k_mem.transpose(-2, -1)) / (self.d_model ** 0.5)
+                attn_weights_mem = F.softmax(attn_scores, dim=-1)  # (B, 1, T)
+                attended_trace = torch.matmul(attn_weights_mem, v_mem).squeeze(1)  # (B, d_model)
+                
+                # First update FIFO trace (before it changes)
+                state_trace_new = torch.cat((state_trace[:, :, 1:], state.unsqueeze(-1)), dim=-1)
+                # Then replace last timestep with attended summary
+                state_trace_attended = torch.cat((state_trace_new[:, :, :-1], attended_trace.unsqueeze(-1)), dim=-1)
+            else:
+                # Default FIFO: sliding window
+                state_trace_attended = torch.cat((state_trace[:, :, 1:], state.unsqueeze(-1)), dim=-1)
+            
+            state_trace = state_trace_attended
 
             # --- Apply Neuron-Level Models ---
             if self.group_count > 0:
@@ -591,13 +626,13 @@ class ContinuousThoughtMachine(nn.Module):
                 for g in range(self.group_count):
                     start_idx = g * self.group_size
                     end_idx = start_idx + self.group_size
-                    group_trace = state_trace[:, start_idx:end_idx, :]
+                    group_trace = state_trace_attended[:, start_idx:end_idx, :]
                     group_out = self.trace_processor[g](group_trace)
                     activated_state_parts.append(group_out)
                 activated_state = torch.cat(activated_state_parts, dim=1)
             else:
                 # Original: single NLM for all neurons
-                activated_state = self.trace_processor(state_trace)
+                activated_state = self.trace_processor(state_trace_attended)
             # One would also keep an 'activated_state_trace' as the history of outgoing post-activations
             # BUT, this is unnecessary because the synchronisation calculation is fully linear and can be
             # done using only the currect activated state (see compute_synchronisation method for explanation)

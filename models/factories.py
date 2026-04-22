@@ -52,6 +52,7 @@ def create_model(args, prediction_reshaper=None):
             n_random_pairing_self=args.n_random_pairing_self,
             grayscale=args.grayscale,
             group_count=getattr(args, 'group_count', 0),
+            memory_write_type=getattr(args, 'memory_write_type', 'fifo'),
         )
     elif args.model == "ctm_gated":
         model = CTMGated(

@@ -322,3 +322,123 @@ class ParityDataset(Dataset):
         cumsum = torch.cumsum(negatives, dim=0)
         target = (cumsum % 2 != 0).to(torch.long)
         return vector, target
+
+
+class MITBIHDataset(Dataset):
+    """MIT-BIH Arrhythmia Dataset loader.
+    
+    Supports two modes:
+    1. Image mode: Loads pre-converted ECG images (folder structure with class subfolders)
+    2. Raw mode: Loads directly from WFDB records
+    
+    Expected folder structure for image mode:
+        root/train/N/*.png (Normal)
+        root/train/L/*.png (Left Bundle Branch Block)
+        root/train/R/*.png (Right Bundle Branch Block)
+        ...
+    """
+    
+    MITBIH_CLASSES = {
+        'N': 'Normal beat',
+        'L': 'Left bundle branch block',
+        'R': 'Right bundle branch block',
+        'A': 'Atrial premature beat',
+        'V': 'Premature ventricular contraction',
+        'F': 'Fusion of ventricular and normal',
+        'f': 'Fusion of paced and normal',
+        'Q': 'Unclassifiable',
+    }
+    
+    def __init__(self, root, split='train', transform=None, img_size=100, use_raw=False):
+        """
+        Args:
+            root: Root directory containing the dataset
+            split: 'train', 'val', or 'test'
+            transform: Optional transform to apply to images
+            img_size: Size to resize images to
+            use_raw: If True, load raw WFDB records; if False, load from image folders
+        """
+        self.root = root
+        self.split = split
+        self.transform = transform
+        self.img_size = img_size
+        self.use_raw = use_raw
+        
+        self.class_to_idx = {cls: idx for idx, cls in enumerate(self.MITBIH_CLASSES.keys())}
+        self.idx_to_class = {idx: cls for cls, idx in self.class_to_idx.items()}
+        self.class_labels = list(self.MITBIH_CLASSES.keys())
+        
+        if use_raw:
+            self._load_raw_dataset()
+        else:
+            self._load_image_dataset()
+    
+    def _load_image_dataset(self):
+        """Load dataset from image folders."""
+        split_path = os.path.join(self.root, self.split)
+        
+        if not os.path.exists(split_path):
+            raise FileNotFoundError(f"Dataset split path not found: {split_path}")
+        
+        self.samples = []
+        self.targets = []
+        
+        for class_name in self.MITBIH_CLASSES.keys():
+            class_path = os.path.join(split_path, class_name)
+            if os.path.exists(class_path):
+                for img_file in os.listdir(class_path):
+                    if img_file.endswith(('.png', '.jpg', '.jpeg')):
+                        self.samples.append(os.path.join(class_path, img_file))
+                        self.targets.append(self.class_to_idx[class_name])
+    
+    def _load_raw_dataset(self):
+        """Load dataset from raw WFDB records."""
+        split_path = os.path.join(self.root, self.split)
+        
+        if not os.path.exists(split_path):
+            raise FileNotFoundError(f"Dataset split path not found: {split_path}")
+        
+        self.samples = []
+        self.targets = []
+        
+        record_files = [f.replace('.atr', '') for f in os.listdir(split_path) if f.endswith('.atr')]
+        
+        for record in record_files:
+            try:
+                import wfdb
+                record_path = os.path.join(split_path, record)
+                signals, fields = wfdb.rdsamp(record_path, pbdir=None)
+                
+                annotation = wfdb.rdann(record_path, 'atr')
+                
+                for i, beat_type in enumerate(annotation.symbol):
+                    if beat_type in self.class_to_idx:
+                        self.samples.append((signals[:, 0], annotation.sample[i]))
+                        self.targets.append(self.class_to_idx[beat_type])
+            except ImportError:
+                print("Warning: wfdb package not installed. Install with: pip install wfdb")
+                break
+            except Exception as e:
+                print(f"Warning: Could not load record {record}: {e}")
+                continue
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        if self.use_raw:
+            signal, sample_idx = self.samples[idx]
+            signal = torch.tensor(signal, dtype=torch.float32)
+            signal = (signal - signal.mean()) / (signal.std() + 1e-8)
+            
+            target = self.targets[idx]
+            return signal, target
+        else:
+            img_path = self.samples[idx]
+            image = Image.open(img_path).convert('L')
+            
+            if self.transform:
+                image = self.transform(image)
+            
+            target = self.targets[idx]
+            return image, target

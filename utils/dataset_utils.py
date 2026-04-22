@@ -256,6 +256,51 @@ def load_affectnet(root: str, val_split_ratio: float = 0.0, use_test_as_val: boo
                          class_labels=class_labels, mean=dataset_mean, std=dataset_std)
 
 
+def load_mitbih(root: str, val_split_ratio: float = 0.0, use_test_as_val: bool = False, img_size: int = 100):
+    """Load MIT-BIH Arrhythmia dataset.
+    
+    The dataset should have the following structure:
+    root/
+    ├── train/
+    │   ├── N/ (Normal)
+    │   ├── L/ (Left Bundle Branch Block)
+    │   ├── R/ (Right Bundle Branch Block)
+    │   ├── A/ (Atrial Premature)
+    │   ├── V/ (Premature Ventricular Contraction)
+    │   └── ...
+    ├── val/
+    └── test/
+    """
+    dataset_mean = [0.5]
+    dataset_std = [0.5]
+    
+    train_transform = _create_transforms(dataset_mean, dataset_std, img_size, grayscale=True, convert_grayscale_to_rgb=False, train=True)
+    test_transform = _create_transforms(dataset_mean, dataset_std, img_size, grayscale=True, convert_grayscale_to_rgb=False, train=False)
+    
+    mitbih_classes = ["N", "L", "R", "A", "V", "F", "f", "Q"]
+    class_labels = mitbih_classes
+    
+    train_data = datasets.ImageFolder(os.path.join(root, "train"), transform=train_transform)
+    val_data = datasets.ImageFolder(os.path.join(root, "val"), transform=test_transform) if os.path.exists(os.path.join(root, "val")) else None
+    test_data = datasets.ImageFolder(os.path.join(root, "test"), transform=test_transform) if os.path.exists(os.path.join(root, "test")) else None
+    
+    if val_data is None and val_split_ratio > 0:
+        train_size = int((1.0 - val_split_ratio) * len(train_data))
+        val_size = len(train_data) - train_size
+        train_data, val_data = torch.utils.data.random_split(
+            train_data,
+            [train_size, val_size],
+            generator=torch.Generator().manual_seed(412),
+        )
+    
+    if use_test_as_val and test_data is not None:
+        val_data = test_data
+        test_data = None
+    
+    return DatasetBundle(train=train_data, val=val_data, test=test_data,
+                         class_labels=class_labels, mean=dataset_mean, std=dataset_std)
+
+
 DATASET_REGISTRY = {
     "cifar10": load_cifar10,
     "cifar100": load_cifar100,
@@ -263,6 +308,7 @@ DATASET_REGISTRY = {
     "ferplusplus": load_ferplusplus,
     "rafdb": load_rafdb,
     "affectnet": load_affectnet,
+    "mitbih": load_mitbih,
 }
 
 
