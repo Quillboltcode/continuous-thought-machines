@@ -67,9 +67,10 @@ def parse_args():
     """Parses command-line arguments."""
     # Note: Original had two ArgumentParser instances, using the second one.
     parser = argparse.ArgumentParser(description="Visualize Continuous Thought Machine Attention")
-    parser.add_argument('--actions', type=str, nargs='+', default=['videos'], choices=['plots', 'videos', 'demo', 'classification_report', 'latent_viz'], help="Actions to take: plots (results plots), videos (gifs/mp4s to watch attention), demo (last frame of internal ticks), classification_report (per-class accuracy metrics), latent_viz (visualize latent evolution with PCA/UMAP)")
+    parser.add_argument('--actions', type=str, nargs='+', default=['videos'], choices=['plots', 'videos', 'demo', 'classification_report', 'latent_viz', 'frob_norm'], help="Actions to take: plots (results plots), videos (gifs/mp4s to watch attention), demo (last frame of internal ticks), classification_report (per-class accuracy metrics), latent_viz (visualize latent evolution with PCA/UMAP), frob_norm (visualize Frobenius norm of synapses weight and latent transitions)")
     parser.add_argument('--latent_viz_type', type=str, default='both', choices=['pca', 'umap', 'both'], help="Dimensionality reduction for latent visualization")
     parser.add_argument('--latent_n_samples', type=int, default=100, help="Number of samples for latent visualization")
+    parser.add_argument('--frob_norm_n_samples', type=int, default=50, help="Number of samples for Frobenius norm analysis")
     parser.add_argument('--device', type=int, nargs='+', default=[-1], help="GPU device index or -1 for CPU")
     
     parser.add_argument('--checkpoint', type=str, default='checkpoints/imagenet/ctm_clean.pt', help="Path to ATM checkpoint")
@@ -861,7 +862,10 @@ if __name__=='__main__':
     if 'latent_viz' in args.actions:
         print("\n=== Latent Visualization ===")
         
-        n_samples = min(args.latent_n_samples, len(validation_dataset))
+        if args.latent_n_samples == -1:
+            n_samples = len(validation_dataset)
+        else:
+            n_samples = min(args.latent_n_samples, len(validation_dataset))
         all_latents = []
         all_targets = []
         all_predictions = []
@@ -893,18 +897,33 @@ if __name__=='__main__':
         tick_ids = np.repeat(np.arange(T), B)  # (B*T,)
         sample_ids = np.tile(np.arange(B), T)  # (B*T,)
         
-        viz_types = [args.latent_viz_type] if args.latent_viz_type == 'both' else [args.latent_viz_type]
-        if args.latent_viz_type == 'both':
-            viz_types = ['pca', 'umap']
+        # If using full test set, only compute PCA to avoid UMAP memory issues
+        if args.latent_n_samples == -1:
+            viz_types = ['pca']
+        else:
+            viz_types = [args.latent_viz_type] if args.latent_viz_type == 'both' else [args.latent_viz_type]
+            if args.latent_viz_type == 'both':
+                viz_types = ['pca', 'umap']
         
         for viz_type in viz_types:
             print(f"Computing {viz_type.upper()}...")
             
             if viz_type == 'pca':
-                reducer = PCA(n_components=2, random_state=42)
-                embedding = reducer.fit_transform(latent_flat)
+                from sklearn.decomposition import IncrementalPCA
+                # Use IncrementalPCA for large datasets to avoid memory issues
+                reducer = IncrementalPCA(n_components=2)
+                # Process in batches to avoid memory overload
+                batch_size = 1000  # Adjust based on memory availability
+                for i in range(0, latent_flat.shape[0], batch_size):
+                    batch = latent_flat[i:i+batch_size]
+                    reducer.partial_fit(batch)
+                embedding = reducer.transform(latent_flat)
                 title = f"PCA of Latent States Across Ticks"
             else:
+                # UMAP is memory-intensive; skip for full set or use subset
+                if args.latent_n_samples == -1:
+                    print("Skipping UMAP for full test set due to memory constraints. Use a subset for UMAP.")
+                    continue
                 reducer = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, random_state=42)
                 embedding = reducer.fit_transform(latent_flat)
                 title = f"UMAP of Latent States Across Ticks"
@@ -987,6 +1006,142 @@ if __name__=='__main__':
             print(f"Saved {viz_type} latent movement to {args.output_dir}/latent_{viz_type}_movement.png")
         
         print("Latent visualization complete!")
+
+    if 'frob_norm' in args.actions:
+        print("\n=== Frobenius Norm Analysis ===")
+        
+        n_samples = min(args.frob_norm_n_samples, len(validation_dataset))
+        frob_norms_per_tick = []  # Will store list of norms per tick for each sample
+        
+        with torch.inference_mode():
+            indices = np.random.choice(len(validation_dataset), size=n_samples, replace=False)
+            
+            for bi, idx in enumerate(tqdm(indices, desc="Computing Frobenius norms")):
+                inputs, targets = validation_dataset[idx]
+                inputs = inputs.to(device).unsqueeze(0)
+                
+                # Get outputs with tracking to access per-tick information if needed
+                predictions, certainties, _, pre_activations, post_activations, _ = model(inputs, track=True)
+                
+                # For each tick, compute Frobenius norm of the synapses weight matrix
+                # Sum the Frobenius norms of all linear layers in the synapses module
+                tick_norms = []
+                for stepi in range(model.iterations):
+                    frob_norm = 0.0
+                    for module in model.synapses.modules():
+                        if isinstance(module, torch.nn.Linear):
+                            frob_norm += torch.norm(module.weight, p='fro').item()
+                    tick_norms.append(frob_norm)
+                
+                frob_norms_per_tick.append(tick_norms)
+        
+        frob_norms_per_tick = np.array(frob_norms_per_tick)  # (n_samples, iterations)
+        
+        # Compute statistics across samples
+        mean_frob = frob_norms_per_tick.mean(axis=0)  # (iterations,)
+        std_frob = frob_norms_per_tick.std(axis=0)
+        min_frob = frob_norms_per_tick.min(axis=0)
+        max_frob = frob_norms_per_tick.max(axis=0)
+        
+        # Plot 1: Mean Frobenius norm across ticks with confidence interval
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ticks = np.arange(1, model.iterations + 1)
+        ax.plot(ticks, mean_frob, 'b-', linewidth=2, label='Mean')
+        ax.fill_between(ticks, mean_frob - std_frob, mean_frob + std_frob, 
+                       alpha=0.3, color='blue', label='±1 std')
+        ax.plot(ticks, min_frob, 'g--', linewidth=1, label='Min across samples')
+        ax.plot(ticks, max_frob, 'r--', linewidth=1, label='Max across samples')
+        ax.set_xlabel('Recurrent Tick')
+        ax.set_ylabel('Frobenius Norm of Synapses Weight')
+        ax.set_title('Frobenius Norm of Synapses Weight Across Recurrent Ticks\n(Shaded region = ±1 std across samples)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(f'{args.output_dir}/frob_norm_synapses_mean.png', dpi=200)
+        plt.savefig(f'{args.output_dir}/frob_norm_synapses_mean.pdf', dpi=200)
+        plt.close()
+        print(f"Saved mean Frobenius norm plot to {args.output_dir}/frob_norm_synapses_mean.png")
+        
+        # Plot 2: Individual sample trajectories (first 10 samples for clarity)
+        fig, ax = plt.subplots(figsize=(12, 6))
+        n_plot_samples = min(10, n_samples)
+        for i in range(n_plot_samples):
+            ax.plot(ticks, frob_norms_per_tick[i], alpha=0.7, linewidth=1, 
+                   label=f'Sample {i}' if i < 5 else "")
+        ax.plot(ticks, mean_frob, 'k-', linewidth=3, label='Mean')
+        ax.set_xlabel('Recurrent Tick')
+        ax.set_ylabel('Frobenius Norm of Synapses Weight')
+        ax.set_title(f'Frobenius Norm Trajectories (First {n_plot_samples} Samples)')
+        ax.legend(loc='best', fontsize=8)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(f'{args.output_dir}/frob_norm_synapses_trajectories.png', dpi=200)
+        plt.savefig(f'{args.output_dir}/frob_norm_synapses_trajectories.pdf', dpi=200)
+        plt.close()
+        print(f"Saved trajectories plot to {args.output_dir}/frob_norm_synapses_trajectories.png")
+        
+        # Plot 3: Distribution of norms at key ticks (early, middle, late)
+        key_ticks = [0, model.iterations//4, model.iterations//2, 3*model.iterations//4, model.iterations-1]
+        key_tick_labels = ['Tick 1', f'Tick {model.iterations//4+1}', 
+                          f'Tick {model.iterations//2+1}', f'Tick {3*model.iterations//4+1}', 
+                          f'Tick {model.iterations}']
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        box_data = [frob_norms_per_tick[:, tick] for tick in key_ticks]
+        ax.boxplot(box_data, labels=key_tick_labels)
+        ax.set_ylabel('Frobenius Norm of Synapses Weight')
+        ax.set_title('Distribution of Frobenius Norm Across Samples at Key Ticks')
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(f'{args.output_dir}/frob_norm_synapses_distribution.png', dpi=200)
+        plt.savefig(f'{args.output_dir}/frob_norm_synapses_distribution.pdf', dpi=200)
+        plt.close()
+        print(f"Saved distribution plot to {args.output_dir}/frob_norm_synapses_distribution.png")
+        
+        # Print summary statistics
+        print(f"\nFrobenius Norm Summary:")
+        print(f"  Overall mean: {mean_frob.mean():.6f}")
+        print(f"  Overall std: {mean_frob.std():.6f}")
+        print(f"  Min over ticks: {mean_frob.min():.6f} (at tick {np.argmin(mean_frob)+1})")
+        print(f"  Max over ticks: {mean_frob.max():.6f} (at tick {np.argmax(mean_frob)+1})")
+        print(f"  Change from first to last tick: {mean_frob[-1] - mean_frob[0]:.6f}")
+        
+        # Also compute norms for other important matrices if desired
+        # For example, output projector
+        output_frobs_per_tick = []
+        for bi, idx in enumerate(indices[:min(10, n_samples)]):  # Just a few samples for output
+            inputs, targets = validation_dataset[idx]
+            inputs = inputs.to(device).unsqueeze(0)
+            with torch.inference_mode():
+                _, _, _, _, _, _ = model(inputs, track=True)  # Just to ensure model is in right state
+            output_frobs = []
+            for stepi in range(model.iterations):
+                frob_norm = 0.0
+                for module in model.output_projector.modules():
+                    if isinstance(module, torch.nn.Linear):
+                        frob_norm += torch.norm(module.weight, p='fro').item()
+                output_frobs.append(frob_norm)
+            output_frobs_per_tick.append(output_frobs)
+        
+        if output_frobs_per_tick:
+            output_frobs_per_tick = np.array(output_frobs_per_tick)
+            mean_output_frob = output_frobs_per_tick.mean(axis=0)
+            
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.plot(ticks, mean_frob, 'b-', linewidth=2, label='Synapses')
+            ax.plot(ticks, mean_output_frob, 'r-', linewidth=2, label='Output Projector')
+            ax.set_xlabel('Recurrent Tick')
+            ax.set_ylabel('Frobenius Norm')
+            ax.set_title('Frobenius Norm Comparison: Synapses vs Output Projector')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(f'{args.output_dir}/frob_norm_comparison.png', dpi=200)
+            plt.savefig(f'{args.output_dir}/frob_norm_comparison.pdf', dpi=200)
+            plt.close()
+            print(f"Saved comparison plot to {args.output_dir}/frob_norm_comparison.png")
+        
+        print("Frobenius norm analysis complete!")
 
     if 'videos' in args.actions:
         if not args.data_indices: # If list is empty
