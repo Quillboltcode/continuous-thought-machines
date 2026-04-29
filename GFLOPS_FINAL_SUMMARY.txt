@@ -1,0 +1,92 @@
+
+         CTM MODEL GFLOPS ANALYSIS - FINAL SUMMARY                        
+
+
+MODEL: Continuous Thought Machine (CTM) from models/ctm.py
+DATASET: RAF-DB (face emotion recognition)
+BACKBONE: ResNet-18 (scale-4 feature extraction)
+
+
+INPUT SIZE: 224 × 224 (RAF-DB standard resize)
+
+
+
+1. WITHOUT BACKBONE (backbone_type='none')
+   ───────────────────────────────────────────────────────────────────────
+
+   Per-loop (single iteration):     2.79 MFLOPs  =  0.0028 GFLOPs
+   ───────────────────────────────────────────────────────────────────────
+   Component breakdown (CTM-only):
+   • Synapse layer (U-Net, depth=4)    1.66 MFLOPs  (59.5%)
+   • Neuron-Level Models (deep NLM)    0.79 MFLOPs  (28.4%)
+   • Attention computation             0.33 MFLOPs  (11.7%)
+   • Synchronization                   0.007 MFLOPs (0.3%)
+   • Output projection                 0.004 MFLOPs (0.1%)
+
+   Total for 50 iterations:           139.69 MFLOPs = 0.1397 GFLOPs
+
+
+2. WITH BACKBONE (resnet18-4, 224×224)
+   ───────────────────────────────────────────────────────────────────────
+
+   Backbone FLOPs (one-time):      13,737.78 MFLOPs = 13.7378 GFLOPs
+   CTM loop per iteration:              2.79 MFLOPs = 0.0028 GFLOPs
+
+   First iteration (backbone + CTM):    13,740.58 MFLOPs = 13.7406 GFLOPs
+   ├─ Backbone (ResNet-18):          13,737.78 MFLOPs (99.98%)
+   └─ CTM internal loop:                  2.79 MFLOPs (0.02%)
+
+   Total for 50 iterations:          13,877.54 MFLOPs = 13.8775 GFLOPs
+   ├─ Backbone (one-time):            13,737.78 MFLOPs (99.0%)
+   └─ 50× CTM loops:                     139.69 MFLOPs (1.0%)
+
+   Per-loop ratio (with BB / without):  4,918×
+   Total ratio (50 iters, with/no BB):     99.3×
+
+
+KEY FINDINGS
+
+
+✓ CTM internal loop is extremely lightweight
+  ~2.8 MFLOPs per iteration (same regardless of backbone)
+
+✓ Backbone feature extraction dominates computation
+  • 99.98% of first-iteration FLOPs (with 224×224 input)
+  • 99.0% of total FLOPs over 50 iterations
+
+✓ The "per loop" is identical with or without backbone
+  Backbone runs ONCE per forward pass (not per iteration)
+  Each CTM iteration adds ~2.79 MFLOPs in all cases
+
+✓ CTM is an efficient reasoning layer
+  • Adds only 0.14 GFLOPs for 50 iterations vs 13.74 GFLOPs for backbone
+  • Enables multi-step iterative reasoning with minimal overhead
+  • Scales linearly with number of iterations
+
+✓ Input size has quadratic impact on backbone FLOPs
+  • 112×112: backbone = 3.43 GFLOPs, total = 3.57 GFLOPs
+  • 224×224: backbone = 13.74 GFLOPs, total = 13.88 GFLOPs
+  • 4× difference (spatial dimensions scale as h×w)
+
+
+FILES GENERATED
+
+Calculation Scripts:
+  • calculate_gflops.py          - Main GFLOPS calculator (224×224)
+  • calculate_gflops_detailed.py  - Detailed component analysis
+
+Reports:
+  • GFLOPS_FINAL_SUMMARY.txt    - This file
+  • GFLOPS_ANSWER.txt           - Concise Q&A format
+  • GFLOPS_REPORT_FINAL.md      - Full detailed report (112×112)
+  • GFLOPS_REPORT_224.txt       - 224×224 console output
+  • GFLOPS_REPORT.txt           - 112×112 console output
+
+Documentation:
+  • README.md                   - Main project documentation
+
+Verification:
+  • Actual forward pass with fvcore profiler (see measure_flops.py)
+  • Model checkpoint: analysis_checkpoints/rafdb/r18-4_i50_d512_m20
+
+

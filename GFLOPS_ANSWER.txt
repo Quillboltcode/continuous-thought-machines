@@ -1,0 +1,109 @@
+================================================================================
+GFLOPS PER LOOP - CTM MODEL (Continuous Thought Machine)
+================================================================================
+
+QUESTION: Count GFLOPS per loop with parameter of the model without backbone
+          and with backbone models/ctm.py
+
+MODEL CONFIGURATION (from analysis checkpoints/rafdb/r18-4_i50_d512_m20)
+------------------------------------------------------------------------
+d_model:              512
+d_input:              256
+heads:                8
+n_synch_out:          256
+n_synch_action:       256
+synapse_depth:        4
+memory_length:        5
+iterations:           50
+backbone_type:        resnet18-4
+input_size:           224×224  (RAF-DB resized images)
+
+================================================================================
+ANSWER: GFLOPS PER LOOP (Single Iteration/Tick)
+================================================================================
+
+1. WITHOUT BACKBONE (backbone_type='none')
+   ────────────────────────────────────────────────────────────────────────
+   
+   Per-loop FLOPs:     2.79 MFLOPs  =  0.0028 GFLOPs
+   
+   Component breakdown:
+   • Synapse layer (depth-4 U-Net):     1.66 MFLOPs  (59.5%)
+   • Neuron-Level Models (deep NLM):    0.79 MFLOPs  (28.4%)
+   • Attention computation:             0.33 MFLOPs  (11.7%)
+   • Synchronization (action):          0.003 MFLOPs (0.1%)
+   • Synchronization (output):          0.003 MFLOPs (0.1%)
+   • Output projection:                 0.004 MFLOPs (0.1%)
+
+2. WITH BACKBONE (resnet18-4)  [224×224 input]
+   ────────────────────────────────────────────────────────────────────────
+   
+   Per-loop FLOPs (CTM only, excluding backbone):  
+                        2.79 MFLOPs  =  0.0028 GFLOPs
+   
+   First iteration (backbone + CTM loop):
+                        13,740.58 MFLOPs = 13.7406 GFLOPs
+                      ├─ Backbone (ResNet-18):  13,737.78 MFLOPs (99.98%)
+                      └─ CTM internal loop:        2.79 MFLOPs (0.02%)
+   
+   Per-loop ratio (with BB / without BB):  4,918×
+
+   NOTE: "Per-loop" is ambiguous here. The backbone runs ONCE per forward
+   pass, not per iteration. Each CTM iteration after the first adds only
+   2.79 MFLOPs regardless of the backbone.
+
+================================================================================
+TOTAL FORWARD PASS (50 Iterations)
+================================================================================
+
+WITHOUT BACKBONE:
+  Total FLOPs:  139.69 MFLOPs = 0.1397 GFLOPs
+  (50 iterations × 2.79 MFLOPs/iteration)
+
+WITH BACKBONE (resnet18-4, 224×224 input):
+  Total FLOPs:  13,877.54 MFLOPs = 13.878 GFLOPs
+  ├─ Backbone (one-time):          13,737.78 MFLOPs (99.0%)
+  └─ 50× CTM loops:                  139.69 MFLOPs (1.0%)
+  
+  Ratio (with/no backbone):  99.3×
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+✓ CTM internal loop is extremely lightweight: ~2.8 MFLOPs per iteration
+  (same regardless of whether backbone is used)
+
+✓ Backbone feature extraction dominates computation:
+  - 99.98% of first-iteration FLOPs (with 224×224 input)
+  - 99.0% of total FLOPs over 50 iterations
+
+✓ The "per loop" computation is the same with or without backbone:
+  The backbone runs ONCE per forward pass, not per iteration.
+  Each CTM iteration adds ~2.79 MFLOPs in all cases.
+
+✓ CTM is an efficient reasoning layer:
+  - Minimal overhead: ~0.14 GFLOPs for 50 iterations
+  - Enables multi-step iterative reasoning
+  - Scales linearly with number of iterations
+
+✓ Input size matters hugely for backbone FLOPs:
+  - 112×112: backbone = 3.43 GFLOPs, total = 3.57 GFLOPs
+  - 224×224: backbone = 13.74 GFLOPs, total = 13.88 GFLOPs
+  - 4× difference (quadratic with spatial dimensions)
+
+================================================================================
+FILES
+================================================================================
+
+Calculation scripts:
+  • calculate_gflops.py          - Main GFLOPS calculation (224×224)
+  • calculate_gflops_detailed.py - Detailed component breakdown
+  
+Reports:
+  • GFLOPS_ANSWER.txt            - This file (concise answer)
+  • GFLOPS_REPORT_FINAL.md       - Full detailed report (112×112)
+  • GFLOPS_REPORT_224.txt        - 224×224 console output
+  • GFLOPS_REPORT.txt            - 112×112 console output
+
+================================================================================

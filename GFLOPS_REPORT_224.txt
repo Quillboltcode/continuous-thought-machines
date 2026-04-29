@@ -1,0 +1,111 @@
+================================================================================
+CTM Model FLOPS Analysis
+================================================================================
+
+Model Configuration:
+  d_model: 512
+  d_input: 256
+  heads: 8
+  n_synch_out: 256
+  n_synch_action: 256
+  synapse_depth: 4
+  memory_length: 5
+  iterations: 50
+  backbone_type: resnet18-4
+  img_size: 224
+
+Backbone FLOPs per forward pass: 13.74 G FLOPs (13737787392)
+
+--------------------------------------------------------------------------------
+WITH BACKBONE (resnet18-4)
+--------------------------------------------------------------------------------
+
+FLOPs per loop (single iteration/tick): 13.74 G FLOPs
+  = 13740581243 FLOPs
+  = 13.7406 GFLOPs
+
+Total FLOPs per forward pass (backbone + 50 loops):
+  Backbone: 13.74 G FLOPs (13.7378 G)
+  50 loops: 687.03 G FLOPs
+  Total: 700.77 G FLOPs (700.7668 G)
+
+--------------------------------------------------------------------------------
+WITHOUT BACKBONE (backbone_type='none')
+--------------------------------------------------------------------------------
+
+FLOPs per loop (single iteration/tick): 2.79 M FLOPs
+  = 2793851 FLOPs
+  = 0.0028 GFLOPs
+
+Total FLOPs for 50 loops (no backbone):
+  = 139.69 M FLOPs (0.1397 G)
+
+With backbone (resnet18-4) - total forward pass (50 iterations):
+  Backbone (once):     13.74 G (13.7378 G)
+  50 CTM loops:     139.69 M (0.1397 G)
+  Total:               13.88 G (13.8775 G)
+
+================================================================================
+COMPARISON
+================================================================================
+
+Per-loop (single iteration) FLOPs:
+  No backbone:         0.0028 G (2.79 M)
+  First iter (w/ BB):  13.7406 G (13.74 G)
+  Ratio (first/no):    4918.2x
+  Backbone share (first iter): 100.0%
+
+Total forward pass FLOPs (50 iterations):
+  Without backbone:    0.1397 G (139.69 M)
+  With backbone:       13.8775 G (13.88 G)
+  Ratio:               99.3x
+
+================================================================================
+SUMMARY TABLE
+================================================================================
+
+Metric                                             Value
+-------------------------------------------------------
+CTM loop (no backbone)                         2.79 MFLOPs
+First iteration (w/ backbone)               13.7406 GFLOPs
+Total forward pass ({iterations} iters)     13.8775 GFLOPs
+Backbone FLOPs                              13.7378 GFLOPs
+CTM-only FLOPs ({iterations} iters)          0.1397 GFLOPs
+Backbone % of first iter                     100.0%
+Backbone % of total ({iterations} iters)      99.0%
+
+================================================================================
+CTM-ONLY LOOP COMPONENT BREAKDOWN
+================================================================================
+Note: Excludes backbone, shows per-iteration CTM computation
+
+
+Per-Loop FLOPs Breakdown (batch_size=1):
+------------------------------------------------------------
+1. Backbone (ResNet-18 scale-4): 0.00 M (0)
+2. Synchronization (action):       0.00 M (3328)
+   - Pairwise multiply:             0.00 M
+   - Recurrence (decay):            0.00 M
+3. Query projection (attn):         0.26 M (262400)
+4. Attention Q @ K^T:               0.03 M (32768)
+5. Attention softmax:               0.00 M (320)
+6. Attention softmax @ V:           0.03 M (32768)
+7. Synapse layer (depth=4): 1.66 M (1661748)
+8. Memory write (fifo):   0.00 M (0)
+9. Neuron-Level Models (NLMs):      0.79 M (793600)
+   (d_model=512, memory_length=5, hidden=16)
+10. Synchronization (output):       0.00 M (3328)
+11. Output projection:              0.00 M (3591)
+------------------------------------------------------------
+TOTAL per loop:                     2.79 M (2793851)
+                                   = 0.0028 G FLOPs
+
+Component % of per-loop FLOPs (excluding backbone):
+  Synchronization (action):    0.1%
+  Attention computation:      11.7%
+  Synapse layer:              59.5%
+  Memory write:                0.0%
+  Neuron-Level Models:        28.4%
+  Synchronization (output):    0.1%
+  Output projection:           0.1%
+

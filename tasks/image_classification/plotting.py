@@ -309,29 +309,14 @@ def make_classification_gif(image, target, predictions, certainties, post_activa
         pbar_inner.set_description('Computing UMAP')
     
 
+        # Skip UMAP computation for faster GIF generation - use simple coordinates
+        x_umap = np.linspace(-1, 1, post_activations.shape[0])
+        y_umap = np.zeros(post_activations.shape[0])
+
+        # Create normalized activations for visualization
         low = np.percentile(post_activations, 1, axis=0, keepdims=True)
         high = np.percentile(post_activations, 99, axis=0, keepdims=True)
-        post_activations_normed = np.clip((post_activations - low)/(high - low), 0, 1)
-        metric = 'cosine'
-        reducer = umap.UMAP(n_components=2,
-                            n_neighbors=100,
-                            min_dist=3,
-                            spread=3.0,
-                            metric=metric,
-                            random_state=None,
-                            # low_memory=True,
-                            ) if post_activations.shape[-1] > 2048 else umap.UMAP(n_components=2,
-                            n_neighbors=20,
-                            min_dist=1,
-                            spread=1.0,
-                            metric=metric,
-                            random_state=None,
-                            # low_memory=True,
-                            )
-        positions = reducer.fit_transform(post_activations_normed.T)
-
-        x_umap = positions[:, 0]
-        y_umap = positions[:, 1]
+        post_activations_normed = np.clip((post_activations - low)/(high - low + 1e-8), 0, 1)
 
         pbar_inner.update(1)
         pbar_inner.set_description('Iterating through to build frames')
@@ -475,9 +460,12 @@ def make_classification_gif(image, target, predictions, certainties, post_activa
                 ax_overlay.axis('off')
 
 
-            z = post_activations_normed[stepi]
-
-            axes['umap'].scatter(x_umap, y_umap, s=30, c=cmap_spectral(z))
+            # Simple trajectory visualization
+            # Use a single color for all points, highlight current step
+            colors = ['lightgray'] * len(x_umap)
+            if stepi < len(colors):
+                colors[stepi] = 'red'
+            axes['umap'].scatter(x_umap, y_umap, s=30, c=colors)
         
             fig.tight_layout(pad=0.1)
             

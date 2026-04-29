@@ -6,6 +6,7 @@ import math
 
 from models.modules import ParityBackbone, SynapseUNET, Squeeze, SuperLinear, LearnableFourierPositionalEncoding, MultiLearnableFourierPositionalEncoding, CustomRotationalEmbedding, CustomRotationalEmbedding1D, ShallowWide
 from models.resnet import prepare_resnet_backbone
+from models.vittiny import prepare_vit_backbone
 from models.utils import compute_normalized_entropy
 
 from models.constants import (
